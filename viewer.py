@@ -1,4 +1,4 @@
-from typing import Any
+
 import os
 import torch
 import torchvision
@@ -11,6 +11,7 @@ import viser
 import viser.transforms as tf
 from omegaconf import OmegaConf
 from collections import deque
+from typing import Any, Dict
 from tqdm import tqdm
 from torchvision.transforms.functional import to_pil_image, to_tensor
 from scene.cameras import Simple_Camera, C2W_Camera, MiniCam
@@ -22,6 +23,7 @@ from utils.sam import LangSAMTextSegmentor
 from argparse import ArgumentParser
 from arguments import ModelParams, PipelineParams, get_combined_args
 from scene import Scene, GaussianModel
+from grounded_sam import GroundMobileSAM, GroundSAM
 
 def qvec2rotmat(qvec):
     return np.array(
@@ -78,6 +80,15 @@ class ViserViewer:
         self.device = "cuda:0"
         self.port = 8080
 
+        self.use_sam = False
+        # self.guidance = None
+        # self.stop_training = False
+        # self.inpaint_end_flag = False
+        self.scale_depth = True
+        self.depth_end_flag = False
+        self.seg_scale = True
+        self.seg_scale_end = False
+        
         self.render_times = deque(maxlen=3)
         self.server = viser.ViserServer(port=self.port)
         
@@ -96,9 +107,10 @@ class ViserViewer:
         self.edit_frames = {}
         self.origin_frames = {}
         self.masks_2D = {}
-        # self.text_segmentor = LangSAMTextSegmentor().cuda()
-        # self.sam_predictor = self.text_segmentor.model.sam
-        # self.sam_predictor.is_image_set = True
+        # self.text_segmentor = GroundMobileSAM(device=self.device)
+        self.text_segmentor = GroundSAM(device=self.device)
+        self.sam_predictor = self.text_segmentor.sam_predictor
+        self.sam_predictor.is_image_set = True
         self.sam_features = {}
         self.semantic_gauassian_masks = {}
         self.semantic_gauassian_masks["ALL"] = torch.ones_like(self.gaussian._opacity)
@@ -111,6 +123,36 @@ class ViserViewer:
             self.add_sam_points = self.server.add_gui_checkbox(
                 "Add SAM Points", initial_value=False
             )
+            self.sam_group_name = self.server.add_gui_text(
+                "SAM Group Name", initial_value=""
+            )
+            self.clear_sam_pins = self.server.add_gui_button(
+                "Clear SAM Pins",
+            )
+            self.text_seg_prompt = self.server.add_gui_text(
+                "Text Seg Prompt", initial_value=""
+            )
+            self.semantic_groups = self.server.add_gui_dropdown(
+                "Semantic Group",
+                options=["ALL"],
+            )
+
+            self.seg_cam_num = self.server.add_gui_slider(
+                "Seg Camera Nums", min=6, max=200, step=1, initial_value=24
+            )
+
+            self.mask_thres = self.server.add_gui_slider(
+                "Seg Threshold", min=0.2, max=0.99999, step=0.00001, initial_value=0.7, visible=False
+            )
+
+            self.show_semantic_mask = self.server.add_gui_checkbox(
+                "Show Semantic Mask", initial_value=False
+            )
+            self.seg_scale_end_button = self.server.add_gui_button(
+                "End Seg Scale!",
+                visible=False,
+            )
+            self.submit_seg_prompt = self.server.add_gui_button("Tracing Begin!")
         with self.server.add_gui_folder("Render Setting"):
             self.reset_view_button = self.server.add_gui_button("Reset View")
 
@@ -164,7 +206,7 @@ class ViserViewer:
             self.renderer_output = self.server.add_gui_dropdown(
                 "Renderer Output",
                 [
-                    "render",
+                    "comp_rgb", 'masks'
                 ],
             )
             self.frame_show = self.server.add_gui_checkbox(
@@ -224,6 +266,34 @@ class ViserViewer:
             @client.camera.on_update
             def _(_):
                 self.need_update = True
+        
+        @self.submit_seg_prompt.on_click
+        def _(_):
+            if not self.sam_enabled.value:
+                text_prompt = self.text_seg_prompt.value
+                print("[Segmentation Prompt]", text_prompt)
+                _, semantic_gaussian_mask = self.update_mask(text_prompt)
+            else:
+                text_prompt = self.sam_group_name.value
+                # buggy here, if self.sam_enabled == True, will raise strange errors. (Maybe caused by multi-threading access to the same SAM model)
+                self.sam_enabled.value = False
+                self.add_sam_points.value = False
+                # breakpoint()
+                _, semantic_gaussian_mask = self.update_sam_mask_with_point_prompt(
+                    save_mask=True
+                )
+
+            self.semantic_gauassian_masks[text_prompt] = semantic_gaussian_mask
+            if text_prompt not in self.semantic_groups.options:
+                self.semantic_groups.options += (text_prompt,)
+            self.semantic_groups.value = text_prompt
+
+        @self.semantic_groups.on_update
+        def _(_):
+            semantic_mask = self.semantic_gauassian_masks[self.semantic_groups.value]
+            self.gaussian.set_mask(semantic_mask)
+            self.gaussian.apply_grad_mask(semantic_mask)
+        
         with torch.no_grad():
             self.frames = []
             random.seed(0)
@@ -379,16 +449,122 @@ class ViserViewer:
 
         if update_mask:
             self.update_sam_mask_with_point_prompt(self.points3d)
+            
+    def render(
+        self,
+        cam,
+        local=False,
+        sam=False,
+        train=False,
+    ) -> Dict[str, Any]:
+        self.gaussian.localize = local
 
-    # no longer needed since can be extracted from langsam
-    # def sam_encode_all_view(self):
-    #     assert hasattr(self, "sam_predictor")
-    #     self.sam_features = {}
-    #     # NOTE: assuming all views have the same size
-    #     for id, frame in self.origin_frames.items():
-    #         # TODO: check frame dtype (float32 or uint8) and device
-    #         self.sam_predictor.set_image(frame)
-    #         self.sam_features[id] = self.sam_predictor.features
+        render_pkg = render(cam, self.gaussian, self.pipe, self.background_tensor)
+        image, viewspace_point_tensor, _, radii = (
+            render_pkg["render"],
+            render_pkg["viewspace_points"],
+            render_pkg["visibility_filter"],
+            render_pkg["radii"],
+        )
+        if train:
+            self.viewspace_point_tensor = viewspace_point_tensor
+            self.radii = radii
+            self.visibility_filter = self.radii > 0.0
+
+        semantic_map = render(
+            cam,
+            self.gaussian,
+            self.pipe,
+            self.background_tensor,
+            override_color=self.gaussian.mask[..., None].float().repeat(1, 3),
+        )["render"]
+        semantic_map = torch.norm(semantic_map, dim=0)
+        semantic_map = semantic_map > 0.0  # 1, H, W
+        semantic_map_viz = image.detach().clone()  # C, H, W
+        semantic_map_viz = semantic_map_viz.permute(1, 2, 0)  # 3 512 512 to 512 512 3
+        semantic_map_viz[semantic_map] = 0.50 * semantic_map_viz[
+            semantic_map
+        ] + 0.50 * torch.tensor([1.0, 0.0, 0.0], device="cuda")
+        semantic_map_viz = semantic_map_viz.permute(2, 0, 1)  # 512 512 3 to 3 512 512
+
+        render_pkg["sam_masks"] = []
+        render_pkg["point2ds"] = []
+        if sam:
+            if hasattr(self, "points3d") and len(self.points3d) > 0:
+                sam_output = self.sam_predict(image, cam)
+                if sam_output is not None:
+                    render_pkg["sam_masks"].append(sam_output[0])
+                    render_pkg["point2ds"].append(sam_output[1])
+
+        self.gaussian.localize = False  # reverse
+
+        render_pkg["semantic"] = semantic_map_viz[None]
+        render_pkg["masks"] = semantic_map[None]  # 1, 1, H, W
+
+        image = image.permute(1, 2, 0)[None]  # C H W to 1 H W C
+        render_pkg["comp_rgb"] = image  # 1 H W C
+
+        depth = render_pkg["depth_3dgs"]
+        depth = depth.permute(1, 2, 0)[None]
+        render_pkg["depth"] = depth
+        render_pkg["opacity"] = depth / (depth.max() + 1e-5)
+
+        return {
+            **render_pkg,
+        }
+    
+    @torch.no_grad()
+    def update_mask(self, text_prompt) -> None:
+
+        masks = []
+        weights = torch.zeros_like(self.gaussian._opacity)
+        weights_cnt = torch.zeros_like(self.gaussian._opacity, dtype=torch.int32)
+
+        total_view_num = len(self.colmap_cameras)
+        random.seed(0)  # make sure same views
+        view_index = random.sample(
+            range(0, total_view_num),
+            min(total_view_num, self.seg_cam_num.value),
+        )
+
+        for idx in tqdm(view_index):
+            cur_cam = self.colmap_cameras[idx]
+            this_frame = render(
+                cur_cam, self.gaussian, self.pipe, self.background_tensor
+            )["render"]
+
+            # breakpoint()
+            # this_frame [c h w]
+            # this_frame = this_frame.moveaxis(0, -1)[None, ...]
+            mask = torch.FloatTensor(self.text_segmentor(to_pil_image(this_frame.cpu()), [f'{text_prompt}.'])[2])[None, ...].to(self.device)
+            # print(mask.shape)
+            if self.use_sam:
+                print("Using SAM")
+                self.sam_features[idx] = self.sam_predictor.features
+
+            masks.append(mask)
+            self.gaussian.apply_weights(cur_cam, weights, weights_cnt, mask)
+
+        weights /= weights_cnt + 1e-7
+        self.seg_scale_end_button.visible = True
+        self.mask_thres.visible = True
+        self.show_semantic_mask.value = True
+        while True:
+            if self.seg_scale:
+                selected_mask = weights > self.mask_thres.value
+                selected_mask = selected_mask[:, 0]
+                self.gaussian.set_mask(selected_mask)
+                self.gaussian.apply_grad_mask(selected_mask)
+
+                self.seg_scale = False
+            if self.seg_scale_end:
+                self.seg_scale_end = False
+                break
+            time.sleep(0.01)
+
+        self.seg_scale_end_button.visible = False
+        self.mask_thres.visible = False
+        return masks, selected_mask
 
     @torch.no_grad()
     def update_sam_mask_with_point_prompt(
@@ -507,17 +683,17 @@ class ViserViewer:
                 except Exception as e:
                     print(e)
 
-        if (
-            self.draw_bbox.value
-            and self.draw_flag
-            and (self.left_up.value[0] < self.right_down.value[0])
-            and (self.left_up.value[1] < self.right_down.value[1])
-        ):
-            out_img[
-                :,
-                self.left_up.value[1] : self.right_down.value[1],
-                self.left_up.value[0] : self.right_down.value[0],
-            ] = 0
+        # if (
+        #     self.draw_bbox.value
+        #     and self.draw_flag
+        #     and (self.left_up.value[0] < self.right_down.value[0])
+        #     and (self.left_up.value[1] < self.right_down.value[1])
+        # ):
+        #     out_img[
+        #         :,
+        #         self.left_up.value[1] : self.right_down.value[1],
+        #         self.left_up.value[0] : self.right_down.value[0],
+        #     ] = 0
 
         self.renderer_output.options = list(output.keys())
         return out_img.cpu().moveaxis(0, -1).numpy().astype(np.uint8)
@@ -559,42 +735,45 @@ class ViserViewer:
         if self.need_update:
             times = []
             for client in self.server.get_clients().values():
-                camera = client.camera
-                W = self.resolution_slider.value
-                H = int(self.resolution_slider.value/camera.aspect)
-                znear = self.near_plane_slider.value
-                zfar = self.far_plane_slider.value
-                world_view_transform = torch.tensor(get_w2c(camera)).cuda()
-                world_view_transform[:3, [1, 2]] *= -1
-                world_view_transform = world_view_transform.transpose(0, 1)
-                projection_matrix = getProjectionMatrix(znear=znear, zfar=zfar, fovX=camera.fov, fovY=camera.fov).transpose(0,1).cuda()
-                full_proj_transform = (world_view_transform.unsqueeze(0).bmm(projection_matrix.unsqueeze(0))).squeeze(0)
-                cam = MiniCam(W, H, camera.fov, camera.fov, znear, zfar, world_view_transform, full_proj_transform)
+                # camera = client.camera
+                # W = self.resolution_slider.value
+                # H = int(self.resolution_slider.value/camera.aspect)
+                # znear = self.near_plane_slider.value
+                # zfar = self.far_plane_slider.value
+                # world_view_transform = torch.tensor(get_w2c(camera)).cuda()
+                # world_view_transform[:3, [1, 2]] *= -1
+                # world_view_transform = world_view_transform.transpose(0, 1)
+                # projection_matrix = getProjectionMatrix(znear=znear, zfar=zfar, fovX=camera.fov, fovY=camera.fov).transpose(0,1).cuda()
+                # full_proj_transform = (world_view_transform.unsqueeze(0).bmm(projection_matrix.unsqueeze(0))).squeeze(0)
+                # cam = MiniCam(W, H, camera.fov, camera.fov, znear, zfar, world_view_transform, full_proj_transform)
+                cam = self.camera
+                output = self.render(cam, sam=self.sam_enabled.value)
+                out = self.prepare_output_image(output)
                 # cam = self.camera
                 # c2w = torch.from_numpy(get_c2w(camera)).to(self.device)
-                try:
-                    start = time.time()
-                    out = render(
-                        cam,
-                        self.gaussian,
-                        self.pipe,
-                        self.background_tensor,
-                    )
-                    self.renderer_output.options = list(out.keys())
-                    out = (
-                        out[self.renderer_output.value]
-                        .detach()
-                        .cpu()
-                        .clamp(min=0.0, max=1.0)
-                        .numpy()
-                        * 255.0
-                    ).astype(np.uint8)
-                    end = time.time()
-                    times.append(end - start)
-                except RuntimeError as e:
-                    print(e)
-                    continue
-                out = np.moveaxis(out.squeeze(), 0, -1)
+                # try:
+                #     start = time.time()
+                #     out = render(
+                #         cam,
+                #         self.gaussian,
+                #         self.pipe,
+                #         self.background_tensor,
+                #     )
+                #     self.renderer_output.options = list(out.keys())
+                #     out = (
+                #         out[self.renderer_output.value]
+                #         .detach()
+                #         .cpu()
+                #         .clamp(min=0.0, max=1.0)
+                #         .numpy()
+                #         * 255.0
+                #     ).astype(np.uint8)
+                #     end = time.time()
+                #     times.append(end - start)
+                # except RuntimeError as e:
+                #     print(e)
+                #     continue
+                # out = np.moveaxis(out.squeeze(), 0, -1)
                 client.set_background_image(out, format="jpeg")
                 del out
 
