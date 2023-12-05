@@ -76,7 +76,7 @@ class GaussianModel:
         self.percent_dense = 0
         self.spatial_lr_scale = 0
         self.setup_functions()
-        self.anchor = {}
+        # self.anchor = {}
         self.localize = False
 
 
@@ -234,17 +234,17 @@ class GaussianModel:
             device="cuda",
             requires_grad=False,
         )  # generation list, begin from zero
-        self.set_mask(
-            torch.ones(
-                self._opacity.shape[0],
-                dtype=torch.bool,
-                device="cuda",
-                requires_grad=False,
-            )
-        )
-        self.apply_grad_mask(self.mask)
+        # self.set_mask(
+        #     torch.ones(
+        #         self._opacity.shape[0],
+        #         dtype=torch.bool,
+        #         device="cuda",
+        #         requires_grad=False,
+        #     )
+        # )
+        # self.apply_grad_mask(self.mask)
 
-        self.update_anchor()
+        # self.update_anchor()
 
     def training_setup(self, training_args):
         self.percent_dense = training_args.percent_dense
