@@ -3,7 +3,7 @@
 # GRAPHDECO research group, https://team.inria.fr/graphdeco
 # All rights reserved.
 #
-# This software is free for non-commercial, research and evaluation use 
+# This software is free for non-commercial, research and evaluation use
 # under the terms of the LICENSE.md file.
 #
 # For inquiries contact  george.drettakis@inria.fr
@@ -35,6 +35,8 @@ def getWorld2View(R, t):
     Rt[3, 3] = 1.0
     return np.float32(Rt)
 
+
+
 def getWorld2View2(R, t, translate=np.array([.0, .0, .0]), scale=1.0):
     Rt = np.zeros((4, 4))
     Rt[:3, :3] = R.transpose()
@@ -48,6 +50,20 @@ def getWorld2View2(R, t, translate=np.array([.0, .0, .0]), scale=1.0):
     Rt = np.linalg.inv(C2W)
     return np.float32(Rt)
 
+def getWorld2View2_tensor(R, t, translate=torch.tensor([.0, .0, .0]), scale=1.0):
+    Rt = torch.zeros((4, 4))
+    Rt[:3, :3] = R.transpose(0,1)
+    Rt[:3, 3] = t
+    Rt[3, 3] = 1.0
+
+    C2W = torch.linalg.inv(Rt)
+    cam_center = C2W[:3, 3]
+    cam_center = (cam_center + translate) * scale
+    C2W[:3, 3] = cam_center
+    Rt = torch.linalg.inv(C2W)
+    return Rt.float()
+
+
 def getProjectionMatrix(znear, zfar, fovX, fovY):
     tanHalfFovY = math.tan((fovY / 2))
     tanHalfFovX = math.tan((fovX / 2))
@@ -57,7 +73,7 @@ def getProjectionMatrix(znear, zfar, fovX, fovY):
     right = tanHalfFovX * znear
     left = -right
 
-    P = torch.zeros(4, 4)
+    P = torch.zeros(4, 4, dtype=torch.float32)
 
     z_sign = 1.0
 

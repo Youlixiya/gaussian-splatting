@@ -10,3 +10,7 @@ screenshots
 *.ipynb
 submodules/diff_rasterization/diff_rasterization.egg-info
 submodules/simple-knn/simple-knn.egg-info
+node_modules
+extern
+package-lock.json
+package.json
