@@ -405,3 +405,23 @@ class GaussianModel:
     def add_densification_stats(self, viewspace_point_tensor, update_filter):
         self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter,:2], dim=-1, keepdim=True)
         self.denom[update_filter] += 1
+    
+    # def apply_weights(self, camera, weights, weights_cnt, image_weights):
+    #     rasterizer = camera2rasterizer(
+    #         camera, torch.tensor([0.0, 0.0, 0.0], dtype=torch.float32, device="cuda")
+    #     )
+    #     rasterizer.apply_weights(
+    #         self.get_xyz,
+    #         None,
+    #         self.get_opacity,
+    #         None,
+    #         weights,
+    #         self.get_scaling,
+    #         self.get_rotation,
+    #         None,
+    #         weights_cnt,
+    #         image_weights,
+    #     )
+
+    # def set_mask(self, mask):
+    #     self.mask = mask

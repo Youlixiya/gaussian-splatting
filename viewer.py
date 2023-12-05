@@ -315,6 +315,10 @@ class ViserViewer:
         def _(pointer):
             self.click_cb(pointer)
         
+        @self.clear_sam_pins.on_click
+        def _(_):
+            self.clear_points3d()
+        
     def make_one_camera_pose_frame(self, idx):
         cam = self.colmap_cameras[idx]
         # wxyz = tf.SO3.from_matrix(cam.R.T).wxyz
@@ -470,22 +474,24 @@ class ViserViewer:
             self.viewspace_point_tensor = viewspace_point_tensor
             self.radii = radii
             self.visibility_filter = self.radii > 0.0
-
-        semantic_map = render(
-            cam,
-            self.gaussian,
-            self.pipe,
-            self.background_tensor,
-            override_color=self.gaussian.mask[..., None].float().repeat(1, 3),
-        )["render"]
-        semantic_map = torch.norm(semantic_map, dim=0)
-        semantic_map = semantic_map > 0.0  # 1, H, W
-        semantic_map_viz = image.detach().clone()  # C, H, W
-        semantic_map_viz = semantic_map_viz.permute(1, 2, 0)  # 3 512 512 to 512 512 3
-        semantic_map_viz[semantic_map] = 0.50 * semantic_map_viz[
-            semantic_map
-        ] + 0.50 * torch.tensor([1.0, 0.0, 0.0], device="cuda")
-        semantic_map_viz = semantic_map_viz.permute(2, 0, 1)  # 512 512 3 to 3 512 512
+        if self.gaussian.mask is not None:
+            semantic_map = render(
+                cam,
+                self.gaussian,
+                self.pipe,
+                self.background_tensor,
+                override_color=self.gaussian.mask[..., None].float().repeat(1, 3),
+            )["render"]
+            semantic_map = torch.norm(semantic_map, dim=0)
+            semantic_map = semantic_map > 0.0  # 1, H, W
+            semantic_map_viz = image.detach().clone()  # C, H, W
+            semantic_map_viz = semantic_map_viz.permute(1, 2, 0)  # 3 512 512 to 512 512 3
+            semantic_map_viz[semantic_map] = 0.50 * semantic_map_viz[
+                semantic_map
+            ] + 0.50 * torch.tensor([1.0, 0.0, 0.0], device="cuda")
+            semantic_map_viz = semantic_map_viz.permute(2, 0, 1)  # 512 512 3 to 3 512 512
+            render_pkg["semantic"] = semantic_map_viz[None]
+            render_pkg["masks"] = semantic_map[None]  # 1, 1, H, W
 
         render_pkg["sam_masks"] = []
         render_pkg["point2ds"] = []
@@ -498,8 +504,8 @@ class ViserViewer:
 
         self.gaussian.localize = False  # reverse
 
-        render_pkg["semantic"] = semantic_map_viz[None]
-        render_pkg["masks"] = semantic_map[None]  # 1, 1, H, W
+        # render_pkg["semantic"] = semantic_map_viz[None]
+        # render_pkg["masks"] = semantic_map[None]  # 1, 1, H, W
 
         image = image.permute(1, 2, 0)[None]  # C H W to 1 H W C
         render_pkg["comp_rgb"] = image  # 1 H W C
@@ -554,7 +560,7 @@ class ViserViewer:
                 selected_mask = weights > self.mask_thres.value
                 selected_mask = selected_mask[:, 0]
                 self.gaussian.set_mask(selected_mask)
-                self.gaussian.apply_grad_mask(selected_mask)
+                # self.gaussian.apply_grad_mask(selected_mask)
 
                 self.seg_scale = False
             if self.seg_scale_end:
@@ -616,7 +622,7 @@ class ViserViewer:
                 selected_mask = weights > self.mask_thres.value
                 selected_mask = selected_mask[:, 0]
                 self.gaussian.set_mask(selected_mask)
-                self.gaussian.apply_grad_mask(selected_mask)
+                # self.gaussian.apply_grad_mask(selected_mask)
 
                 self.seg_scale = False
             if self.seg_scale_end:
@@ -658,7 +664,7 @@ class ViserViewer:
         out_key = self.renderer_output.value
         out_img = output[out_key][0]  # H W C
         if out_key == "comp_rgb":
-            if self.show_semantic_mask.value:
+            if self.show_semantic_mask.value and 'semantic' in output.keys():
                 out_img = output["semantic"][0].moveaxis(0, -1)
         elif out_key == "masks":
             out_img = output["masks"][0].to(torch.float32)[..., None].repeat(1, 1, 3)
