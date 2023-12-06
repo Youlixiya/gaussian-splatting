@@ -5,6 +5,7 @@ import torchvision
 import random
 import math
 import numpy as np
+from copy import deepcopy
 from PIL import Image
 import time
 import viser
@@ -107,8 +108,8 @@ class ViserViewer:
         self.edit_frames = {}
         self.origin_frames = {}
         self.masks_2D = {}
-        # self.text_segmentor = GroundMobileSAM(device=self.device)
-        self.text_segmentor = GroundSAM(device=self.device)
+        self.text_segmentor = GroundMobileSAM(device=self.device)
+        # self.text_segmentor = GroundSAM(device=self.device)
         self.sam_predictor = self.text_segmentor.sam_predictor
         self.sam_predictor.is_image_set = True
         self.sam_features = {}
@@ -212,6 +213,9 @@ class ViserViewer:
             self.frame_show = self.server.add_gui_checkbox(
                 "Show Frame", initial_value=False
             )
+            self.extract_mesh_button = self.server.add_gui_button(
+                "Extract Mesh"
+            )
 
         @self.renderer_output.on_update
         def _(_):
@@ -288,11 +292,19 @@ class ViserViewer:
                 self.semantic_groups.options += (text_prompt,)
             self.semantic_groups.value = text_prompt
 
+        @self.mask_thres.on_update
+        def _(_):
+            self.seg_scale = True
+        
+        @self.seg_scale_end_button.on_click
+        def _(_):
+            self.seg_scale_end = True
+        
         @self.semantic_groups.on_update
         def _(_):
             semantic_mask = self.semantic_gauassian_masks[self.semantic_groups.value]
             self.gaussian.set_mask(semantic_mask)
-            self.gaussian.apply_grad_mask(semantic_mask)
+            # self.gaussian.apply_grad_mask(semantic_mask)
         
         with torch.no_grad():
             self.frames = []
@@ -314,10 +326,13 @@ class ViserViewer:
         @self.server.on_scene_click
         def _(pointer):
             self.click_cb(pointer)
-        
-        @self.clear_sam_pins.on_click
+            
+        @self.extract_mesh_button.on_click
         def _(_):
-            self.clear_points3d()
+            density_thresh = 1
+            path = os.path.join(os.path.basename(os.path.abspath(os.path.join(self.gs_source, os.pardir))), 'mesh.ply')
+            mesh = self.gaussian.extract_mesh(path, density_thresh)
+            mesh.write_ply(path)
         
     def make_one_camera_pose_frame(self, idx):
         cam = self.colmap_cameras[idx]
@@ -560,7 +575,7 @@ class ViserViewer:
                 selected_mask = weights > self.mask_thres.value
                 selected_mask = selected_mask[:, 0]
                 self.gaussian.set_mask(selected_mask)
-                # self.gaussian.apply_grad_mask(selected_mask)
+                self.gaussian.apply_grad_mask(selected_mask)
 
                 self.seg_scale = False
             if self.seg_scale_end:
@@ -594,9 +609,9 @@ class ViserViewer:
             img = render(cur_cam, self.gaussian, self.pipe, self.background_tensor)[
                 "render"
             ]
-
+            img_np = np.asarray(to_pil_image(img.cpu()))
             self.sam_predictor.set_image(
-                np.asarray(to_pil_image(img.cpu())),
+                img_np,
             )
             self.sam_features[idx] = self.sam_predictor.features
             # print(points2ds)
@@ -632,13 +647,14 @@ class ViserViewer:
 
         self.seg_scale_end_button.visible = False
         self.mask_thres.visible = False
-
         if save_mask:
             for id, mask in enumerate(masks):
-                mask = mask.cpu().numpy()[0, 0]
-                img = Image.fromarray(mask)
+                mask = mask.cpu().numpy().transpose(1, 2, 0)
+                mask_img = deepcopy(img_np)
+                mask_img[mask] = (0.50 * mask_img[mask] + 0.50 * np.array([255, 0, 0])).astype(np.uint8)
+                mask_img = Image.fromarray(mask_img)
                 os.makedirs("tmp",exist_ok=True)
-                img.save(f"./tmp/{save_name}-{id}.jpg")
+                mask_img.save(f"./tmp/{save_name}-{id}.jpg")
 
         return masks, selected_mask
 
@@ -664,7 +680,7 @@ class ViserViewer:
         out_key = self.renderer_output.value
         out_img = output[out_key][0]  # H W C
         if out_key == "comp_rgb":
-            if self.show_semantic_mask.value and 'semantic' in output.keys():
+            if self.show_semantic_mask.value and "semantic" in output.keys():
                 out_img = output["semantic"][0].moveaxis(0, -1)
         elif out_key == "masks":
             out_img = output["masks"][0].to(torch.float32)[..., None].repeat(1, 1, 3)
@@ -703,6 +719,50 @@ class ViserViewer:
 
         self.renderer_output.options = list(output.keys())
         return out_img.cpu().moveaxis(0, -1).numpy().astype(np.uint8)
+    
+    # @property
+    # def camera(self):
+    #     if len(list(self.server.get_clients().values())) == 0:
+    #         return None
+    #     if self.render_cameras is None and self.colmap_dir is not None:
+    #         self.aspect = list(self.server.get_clients().values())[0].camera.aspect
+    #         self.render_cameras = CamScene(
+    #             self.colmap_dir, h=-1, w=-1, aspect=self.aspect
+    #         ).cameras
+    #         self.begin_call(list(self.server.get_clients().values())[0])
+    #     viser_cam = list(self.server.get_clients().values())[0].camera
+    #     # viser_cam.up_direction = tf.SO3(viser_cam.wxyz) @ np.array([0.0, -1.0, 0.0])
+    #     # viser_cam.look_at = viser_cam.position
+    #     # R = tf.SO3(viser_cam.wxyz).as_matrix()
+    #     # T = -R.T @ viser_cam.position
+    #     # T = viser_cam.position
+    #     if self.render_cameras is None:
+    #         fovy = viser_cam.fov * self.FoV_slider.value
+    #         fovy = viser_cam.fov
+    #     else:
+    #         fovy = self.render_cameras[0].FoVy * self.FoV_slider.value
+    #         fovy = self.render_cameras[0].FoVy
+    #     fovx = 2 * math.atan(math.tan(fovy / 2) * self.aspect)
+    #     # fovy = self.render_cameras[0].FoVy
+    #     # fovx = self.render_cameras[0].FoVx
+    #     # math.tan(self.render_cameras[0].FoVx / 2) / math.tan(self.render_cameras[0].FoVy / 2)
+    #     # math.tan(fovx/2) / math.tan(fovy/2)
+
+    #     # aspect = viser_cam.aspect
+    #     width = int(self.resolution_slider.value)
+    #     height = int(width / self.aspect)
+    #     # fovx = fovy = viser_cam.fov
+    #     znear = self.near_plane_slider.value
+    #     zfar = self.far_plane_slider.value
+    #     world_view_transform = torch.tensor(get_w2c(viser_cam)).cuda()
+    #     # world_view_transform[:3, [1, 2]] *= -1
+    #     world_view_transform = world_view_transform.transpose(0, 1)
+    #     projection_matrix = getProjectionMatrix(znear=znear, zfar=zfar, fovX=fovx, fovY=fovy).transpose(0,1).cuda()
+    #     full_proj_transform = (world_view_transform.unsqueeze(0).bmm(projection_matrix.unsqueeze(0))).squeeze(0)
+    #     cam = MiniCam(width, height, fovx, fovy, znear, zfar, world_view_transform, full_proj_transform)
+    #     return cam
+        
+    #     # return Simple_Camera(0, R, T, fovx, fovy, height, width, "", 0)
     
     @property
     def camera(self):
