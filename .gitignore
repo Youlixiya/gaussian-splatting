@@ -15,10 +15,10 @@ extern
 package-lock.json
 package.json
 Grounded_SAM/build
-Grounded_SAM/weights
 Grounded-SAM/ground_sam.egg-info
 Grounded-SAM/GroundingDINO/build
 Grounded-SAM/GroundingDINO/groundingdino.egg-info
 Grounded-SAM/segment_anything/build
 Grounded-SAM/segment_anything/groundingdino.egg-info
 tmp
+Grounded_SAM/weights
