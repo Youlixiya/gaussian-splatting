@@ -52,6 +52,32 @@ namespace CudaRasterizer
 		static ImageState fromChunk(char*& chunk, size_t N);
 	};
 
+	struct GeometryFeatureState
+	{
+		size_t scan_size;
+		float* depths;
+		char* scanning_space;
+		bool* clamped;
+		int* internal_radii;
+		float2* means2D;
+		float* cov3D;
+		float4* conic_opacity;
+		float* feature;
+		uint32_t* point_offsets;
+		uint32_t* tiles_touched;
+
+		static GeometryFeatureState fromChunk(char*& chunk, size_t P);
+	};
+
+	struct FeatureState
+	{
+		uint2* ranges;
+		uint32_t* n_contrib;
+		float* accum_alpha;
+
+		static FeatureState fromChunk(char*& chunk, size_t N);
+	};
+
 	struct BinningState
 	{
 		size_t sorting_size;

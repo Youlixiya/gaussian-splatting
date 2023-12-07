@@ -14,6 +14,7 @@ import math
 from diff_gaussian_rasterization import (
     GaussianRasterizationSettings,
     GaussianRasterizer,
+    GaussianFeatureRasterizer
 )
 from utils.sh_utils import eval_sh
 
@@ -49,6 +50,7 @@ def render(
     bg_color: torch.Tensor,
     scaling_modifier=1.0,
     override_color=None,
+    render_feature=False
 ):
     """
     Render the scene.
@@ -71,7 +73,13 @@ def render(
     # Set up rasterization configuration
     tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
     tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
-
+    if render_feature:
+        bg_color = torch.tensor(
+            [0] * pc.feature_dim, dtype=torch.float32, device="cuda"
+        )
+        Rasterizer = GaussianFeatureRasterizer
+    else:
+        Rasterizer = GaussianRasterizer
     raster_settings = GaussianRasterizationSettings(
         image_height=int(viewpoint_camera.image_height),
         image_width=int(viewpoint_camera.image_width),
@@ -87,7 +95,7 @@ def render(
         debug=False,
     )
 
-    rasterizer = GaussianRasterizer(raster_settings=raster_settings)
+    rasterizer = Rasterizer(raster_settings=raster_settings)
 
     means3D = pc.get_xyz
     means2D = screenspace_points
@@ -108,7 +116,7 @@ def render(
     # from SHs in Python, do it. If not, then SH -> RGB conversion will be done by rasterizer.
     shs = None
     colors_precomp = None
-    if override_color is None:
+    if override_color is None and not render_feature:
         if pipe.convert_SHs_python:
             shs_view = pc.get_features.transpose(1, 2).view(
                 -1, 3, (pc.max_sh_degree + 1) ** 2
@@ -128,21 +136,36 @@ def render(
 
     # Rasterize visible Gaussians to image, obtain their radii (on screen).
     # import pdb; pdb.set_trace()
-    rendered_image, radii, depth = rasterizer(
+    if render_feature:
+        rendered_feature, radii, depth = rasterizer(
         means3D=means3D.float(),
         means2D=means2D.float(),
         shs=shs,
-        colors_precomp=colors_precomp,
+        features_precomp=pc._features,
         opacities=opacity.float(),
         scales=scales.float(),
         rotations=rotations.float(),
         cov3D_precomp=cov3D_precomp,
-    )
+        )
+        rendered_image=None
+    else:
+        rendered_image, radii, depth = rasterizer(
+            means3D=means3D.float(),
+            means2D=means2D.float(),
+            shs=shs,
+            colors_precomp=colors_precomp,
+            opacities=opacity.float(),
+            scales=scales.float(),
+            rotations=rotations.float(),
+            cov3D_precomp=cov3D_precomp,
+        )
+        rendered_feature = None
 
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.
     return {
         "render": rendered_image,
+        "render_feature": rendered_feature,
         "viewspace_points": screenspace_points,
         "visibility_filter": radii > 0,
         "radii": radii,

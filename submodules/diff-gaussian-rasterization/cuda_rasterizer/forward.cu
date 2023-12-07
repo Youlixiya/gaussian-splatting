@@ -262,10 +262,10 @@ __global__ void featurepreprocessCUDA(int P, int D, int M,
 	const float scale_modifier,
 	const glm::vec4* rotations,
 	const float* opacities,
-	const float* features,
+	const float* shs,
 	bool* clamped,
 	const float* cov3D_precomp,
-	const float* colors_precomp,
+	const float* features_precomp,
 	const float* viewmatrix,
 	const float* projmatrix,
 	const glm::vec3* cam_pos,
@@ -276,6 +276,7 @@ __global__ void featurepreprocessCUDA(int P, int D, int M,
 	float2* points_xy_image,
 	float* depths,
 	float* cov3Ds,
+	float* feature,
 	float4* conic_opacity,
 	const dim3 grid,
 	uint32_t* tiles_touched,
@@ -480,7 +481,7 @@ renderCUDA(
 	}
 }
 
-template <uint32_t CHANNELS>
+template <uint32_t FEATURE_CHANNELS>
 __global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
 featurerenderCUDA(
 	const uint2* __restrict__ ranges,
@@ -492,7 +493,7 @@ featurerenderCUDA(
 	const float4* __restrict__ conic_opacity,
 	float* __restrict__ final_T,
 	uint32_t* __restrict__ n_contrib,
-	// const float* __restrict__ bg_color,
+	const float* __restrict__ bg_color,
 	float* __restrict__ out_feature,
 	float* __restrict__ out_depth)
 {
@@ -524,7 +525,7 @@ featurerenderCUDA(
 	float T = 1.0f;
 	uint32_t contributor = 0;
 	uint32_t last_contributor = 0;
-	float C[CHANNELS] = { 0 };
+	float C[FEATURE_CHANNELS] = { 0 };
 	float D = { 0 };
 
 	// Iterate over batches until all done or range is complete
@@ -576,8 +577,8 @@ featurerenderCUDA(
 			}
 
 			// Eq. (3) from 3D Gaussian splatting paper.
-			for (int ch = 0; ch < CHANNELS; ch++)
-				C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha * T;
+			for (int ch = 0; ch < FEATURE_CHANNELS; ch++)
+				C[ch] += features[collected_id[j] * FEATURE_CHANNELS + ch] * alpha * T;
 			D += depths[collected_id[j]] * alpha * T;
 
 			T = test_T;
@@ -594,8 +595,8 @@ featurerenderCUDA(
 	{
 		final_T[pix_id] = T;
 		n_contrib[pix_id] = last_contributor;
-		for (int ch = 0; ch < CHANNELS; ch++)
-			out_feature[ch * H * W + pix_id] = C[ch];
+		for (int ch = 0; ch < FEATURE_CHANNELS; ch++)
+			out_feature[ch * H * W + pix_id] = C[ch] + T * bg_color[ch];
 		out_depth[pix_id] = D;
 	}
 }
@@ -685,6 +686,61 @@ void FORWARD::preprocess(int P, int D, int M,
 		);
 }
 
+void FEATUREFORWARD::preprocess(int P, int D, int M,
+	const float* means3D,
+	const glm::vec3* scales,
+	const float scale_modifier,
+	const glm::vec4* rotations,
+	const float* opacities,
+	const float* shs,
+	bool* clamped,
+	const float* cov3D_precomp,
+	const float* features_precomp,
+	const float* viewmatrix,
+	const float* projmatrix,
+	const glm::vec3* cam_pos,
+	const int W, int H,
+	const float focal_x, float focal_y,
+	const float tan_fovx, float tan_fovy,
+	int* radii,
+	float2* means2D,
+	float* depths,
+	float* cov3Ds,
+	float* feature,
+	float4* conic_opacity,
+	const dim3 grid,
+	uint32_t* tiles_touched,
+	bool prefiltered)
+{
+	featurepreprocessCUDA<FEATURE_NUM_CHANNELS> << <(P + 255) / 256, 256 >> > (
+		P, D, M,
+		means3D,
+		scales,
+		scale_modifier,
+		rotations,
+		opacities,
+		shs,
+		clamped,
+		cov3D_precomp,
+		features_precomp,
+		viewmatrix, 
+		projmatrix,
+		cam_pos,
+		W, H,
+		tan_fovx, tan_fovy,
+		focal_x, focal_y,
+		radii,
+		means2D,
+		depths,
+		cov3Ds,
+		feature,
+		conic_opacity,
+		grid,
+		tiles_touched,
+		prefiltered
+		);
+}
+
 void FEATUREFORWARD::render(
 	const dim3 grid, dim3 block,
 	const uint2* ranges,
@@ -696,11 +752,11 @@ void FEATUREFORWARD::render(
 	const float4* conic_opacity,
 	float* final_T,
 	uint32_t* n_contrib,
-	// const float* bg_color,
+	const float* bg_color,
 	float* out_feature,
 	float* out_depth)
 {
-	featurerenderCUDA<NUM_CHANNELS> << <grid, block >> > (
+	featurerenderCUDA<FEATURE_NUM_CHANNELS> << <grid, block >> > (
 		ranges,
 		point_list,
 		W, H,
@@ -710,62 +766,8 @@ void FEATUREFORWARD::render(
 		conic_opacity,
 		final_T,
 		n_contrib,
-		// bg_color,
+		bg_color,
 		out_feature,
 		out_depth);
 }
 
-void FEATUREFORWARD::preprocess(int P, int D, int M,
-	const float* means3D,
-	const glm::vec3* scales,
-	const float scale_modifier,
-	const glm::vec4* rotations,
-	const float* opacities,
-	const float* features,
-	bool* clamped,
-	const float* cov3D_precomp,
-	const float* colors_precomp,
-	const float* viewmatrix,
-	const float* projmatrix,
-	const glm::vec3* cam_pos,
-	const int W, int H,
-	const float focal_x, float focal_y,
-	const float tan_fovx, float tan_fovy,
-	int* radii,
-	float2* means2D,
-	float* depths,
-	float* cov3Ds,
-	// float* rgb,
-	float4* conic_opacity,
-	const dim3 grid,
-	uint32_t* tiles_touched,
-	bool prefiltered)
-{
-	featurepreprocessCUDA<NUM_CHANNELS> << <(P + 255) / 256, 256 >> > (
-		P, D, M,
-		means3D,
-		scales,
-		scale_modifier,
-		rotations,
-		opacities,
-		features,
-		clamped,
-		cov3D_precomp,
-		colors_precomp,
-		viewmatrix, 
-		projmatrix,
-		cam_pos,
-		W, H,
-		tan_fovx, tan_fovy,
-		focal_x, focal_y,
-		radii,
-		means2D,
-		depths,
-		cov3Ds,
-		// rgb,
-		conic_opacity,
-		grid,
-		tiles_touched,
-		prefiltered
-		);
-}

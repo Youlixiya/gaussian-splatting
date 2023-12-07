@@ -159,6 +159,7 @@ CudaRasterizer::GeometryFeatureState::fromChunk(char *&chunk, size_t P) {
   obtain(chunk, geom.means2D, P, 128);
   obtain(chunk, geom.cov3D, P * 6, 128);
   obtain(chunk, geom.conic_opacity, P, 128);
+  obtain(chunk, geom.feature, P * 3, 128);
   obtain(chunk, geom.tiles_touched, P, 128);
   cub::DeviceScan::InclusiveSum(nullptr, geom.scan_size, geom.tiles_touched,
                                 geom.tiles_touched, P);
@@ -311,11 +312,11 @@ int CudaRasterizer::Rasterizer::forward(
 }
 
 int CudaRasterizer::Rasterizer::featureforward(
-    std::function<char *(size_t)> GeometryFeatureState,
+    std::function<char *(size_t)> geometryfeatureBuffer,
     std::function<char *(size_t)> binningBuffer,
-    std::function<char *(size_t)> FeatureBuffer, const int P, int D, int M,
-    const int width, int height, const float *means3D,
-    const float *features, const float *colors_precomp, const float *opacities,
+    std::function<char *(size_t)> featureBuffer, const int P, int D, int M,
+    const float *background, const int width, int height, const float *means3D,
+    const float *shs, const float *features_precomp, const float *opacities,
     const float *scales, const float scale_modifier, const float *rotations,
     const float *cov3D_precomp, const float *viewmatrix,
     const float *projmatrix, const float *cam_pos, const float tan_fovx,
@@ -325,8 +326,8 @@ int CudaRasterizer::Rasterizer::featureforward(
   const float focal_x = width / (2.0f * tan_fovx);
 
   size_t chunk_size = required<GeometryFeatureState>(P);
-  char *chunkptr = geometryBuffer(chunk_size);
-  GeometryFeatureState geomfeatureState = GeometryFeatureState::fromChunk(chunkptr, P, N);
+  char *chunkptr = geometryfeatureBuffer(chunk_size);
+  GeometryFeatureState geomfeatureState = GeometryFeatureState::fromChunk(chunkptr, P);
 
   if (radii == nullptr) {
     radii = geomfeatureState.internal_radii;
@@ -337,11 +338,11 @@ int CudaRasterizer::Rasterizer::featureforward(
   dim3 block(BLOCK_X, BLOCK_Y, 1);
 
   // Dynamically resize image-based auxiliary buffers during training
-  size_t feature_chunk_size = required<FeatureState>(width * height);
-  char *feature_chunkptr = featureBuffer(feature_chunk_size);
-  FeatureState featureState = FeatureState::fromChunk(feature_chunkptr, width * height);
+  size_t img_chunk_size = required<FeatureState>(width * height);
+  char *img_chunkptr = featureBuffer(img_chunk_size);
+  FeatureState featureState = FeatureState::fromChunk(img_chunkptr, width * height);
 
-  // if (NUM_CHANNELS != 3 && colors_precomp == nullptr) {
+  // if (FEATURE_NUM_CHANNELS != 16 && features_precomp == nullptr) {
   //   throw std::runtime_error(
   //       "For non-RGB, provide precomputed Gaussian colors!");
   // }
@@ -350,11 +351,11 @@ int CudaRasterizer::Rasterizer::featureforward(
   // to RGB)
   CHECK_CUDA(FEATUREFORWARD::preprocess(
                  P, D, M, means3D, (glm::vec3 *)scales, scale_modifier,
-                 (glm::vec4 *)rotations, opacities, features, geomfeatureState.clamped,
-                 cov3D_precomp, colors_precomp, viewmatrix, projmatrix,
+                 (glm::vec4 *)rotations, opacities, shs, geomfeatureState.clamped,
+                 cov3D_precomp, features_precomp, viewmatrix, projmatrix,
                  (glm::vec3 *)cam_pos, width, height, focal_x, focal_y,
                  tan_fovx, tan_fovy, radii, geomfeatureState.means2D, geomfeatureState.depths,
-                 geomfeatureState.cov3D, geomfeatureState.conic_opacity,
+                 geomfeatureState.cov3D, geomfeatureState.feature, geomfeatureState.conic_opacity,
                  tile_grid, geomfeatureState.tiles_touched, prefiltered),
              debug)
 
@@ -406,12 +407,12 @@ int CudaRasterizer::Rasterizer::featureforward(
 
   // Let each tile blend its range of Gaussians independently in parallel
   const float *feature_ptr =
-      colors_precomp != nullptr ? colors_precomp : features;
-  CHECK_CUDA(FEATUREFORWARD::render(tile_grid, block, featureState.ranges,
+      features_precomp != nullptr ? features_precomp : geomfeatureState.feature;
+  CHECK_CUDA(FORWARD::render(tile_grid, block, featureState.ranges,
                              binningState.point_list, width, height,
                              geomfeatureState.means2D, feature_ptr, geomfeatureState.depths,
                              geomfeatureState.conic_opacity, featureState.accum_alpha,
-                             featureState.n_contrib, out_feature,
+                             featureState.n_contrib, background, out_feature,
                              out_depth),
              debug)
 
@@ -473,6 +474,61 @@ void CudaRasterizer::Rasterizer::backward(
                  (glm::vec3 *)dL_dscale, (glm::vec4 *)dL_drot),
              debug)
 }
+
+void CudaRasterizer::Rasterizer::featurebackward(
+    const int P, int D, int M, int R, const float *background, const int width,
+    int height, const float *means3D, const float *shs,
+    const float *features_precomp, const float *scales,
+    const float scale_modifier, const float *rotations,
+    const float *cov3D_precomp, const float *viewmatrix,
+    const float *projmatrix, const float *campos, const float tan_fovx,
+    float tan_fovy, const int *radii, char *geom_feature_buffer, char *binning_buffer,
+    char *feature_buffer, const float *dL_dpix, float *dL_dmean2D, float *dL_dconic,
+    float *dL_dopacity, float *dL_dfeature, float *dL_dmean3D, float *dL_dcov3D,
+    float *dL_dsh, float *dL_dscale, float *dL_drot, bool debug) {
+  GeometryFeatureState geomfeatureState = GeometryFeatureState::fromChunk(geom_feature_buffer, P);
+  BinningState binningState = BinningState::fromChunk(binning_buffer, R);
+  FeatureState featureState = FeatureState::fromChunk(feature_buffer, width * height);
+
+  if (radii == nullptr) {
+    radii = geomfeatureState.internal_radii;
+  }
+
+  const float focal_y = height / (2.0f * tan_fovy);
+  const float focal_x = width / (2.0f * tan_fovx);
+
+  const dim3 tile_grid((width + BLOCK_X - 1) / BLOCK_X,
+                       (height + BLOCK_Y - 1) / BLOCK_Y, 1);
+  const dim3 block(BLOCK_X, BLOCK_Y, 1);
+
+  // Compute loss gradients w.r.t. 2D mean position, conic matrix,
+  // opacity and RGB of Gaussians from per-pixel loss gradients.
+  // If we were given precomputed colors and not SHs, use them.
+  const float *feature_ptr =
+      (features_precomp != nullptr) ? features_precomp : geomfeatureState.feature;
+  CHECK_CUDA(FEATUREBACKWARD::render(
+                 tile_grid, block, featureState.ranges, binningState.point_list,
+                 width, height, background, geomfeatureState.means2D,
+                 geomfeatureState.conic_opacity, feature_ptr, featureState.accum_alpha,
+                 featureState.n_contrib, dL_dpix, (float3 *)dL_dmean2D,
+                 (float4 *)dL_dconic, dL_dopacity, dL_dfeature),
+             debug)
+
+  // Take care of the rest of preprocessing. Was the precomputed covariance
+  // given to us or a scales/rot pair? If precomputed, pass that. If not,
+  // use the one we computed ourselves.
+  const float *cov3D_ptr =
+      (cov3D_precomp != nullptr) ? cov3D_precomp : geomfeatureState.cov3D;
+  CHECK_CUDA(FEATUREBACKWARD::preprocess(
+                 P, D, M, (float3 *)means3D, radii, shs, geomfeatureState.clamped,
+                 (glm::vec3 *)scales, (glm::vec4 *)rotations, scale_modifier,
+                 cov3D_ptr, viewmatrix, projmatrix, focal_x, focal_y, tan_fovx,
+                 tan_fovy, (glm::vec3 *)campos, (float3 *)dL_dmean2D, dL_dconic,
+                 (glm::vec3 *)dL_dmean3D, dL_dfeature, dL_dcov3D, dL_dsh,
+                 (glm::vec3 *)dL_dscale, (glm::vec4 *)dL_drot),
+             debug)
+}
+
 
 void CudaRasterizer::Rasterizer::apply_weights(
     std::function<char *(size_t)> geometryBuffer,

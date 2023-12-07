@@ -65,7 +65,7 @@ namespace FORWARD
 }
 
 
-#endif
+// #endif
 
 namespace FEATUREFORWARD
 {
@@ -76,10 +76,10 @@ namespace FEATUREFORWARD
 		const float scale_modifier,
 		const glm::vec4* rotations,
 		const float* opacities,
-		const float* features,
+		const float* shs,
 		bool* clamped,
 		const float* cov3D_precomp,
-		const float* colors_precomp,
+		const float* features_precomp,
 		const float* viewmatrix,
 		const float* projmatrix,
 		const glm::vec3* cam_pos,
@@ -90,7 +90,7 @@ namespace FEATUREFORWARD
 		float2* points_xy_image,
 		float* depths,
 		float* cov3Ds,
-		float* colors,
+		float* features,
 		float4* conic_opacity,
 		const dim3 grid,
 		uint32_t* tiles_touched,
@@ -109,7 +109,7 @@ namespace FEATUREFORWARD
 		float* final_T,
 		uint32_t* n_contrib,
 		const float* bg_color,
-		float* out_color,
+		float* out_feature,
 		float* out_depth);
 }
 

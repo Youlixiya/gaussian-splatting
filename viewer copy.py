@@ -23,7 +23,7 @@ from utils.camera_utils import project, unproject
 from utils.sam import LangSAMTextSegmentor
 from argparse import ArgumentParser
 from arguments import ModelParams, PipelineParams, get_combined_args
-from scene import Scene, GaussianModel, GaussianFeatureModel
+from scene import Scene, GaussianModel
 from grounded_sam import GroundMobileSAM, GroundSAM
 
 def qvec2rotmat(qvec):
@@ -73,7 +73,7 @@ class ViserViewer:
     def __init__(self, cfg):
         self.gs_source = cfg.gs_source
         self.colmap_dir = cfg.colmap_dir
-        self.gaussian = GaussianFeatureModel(sh_degree=3)
+        self.gaussian = GaussianModel(sh_degree=3)
         self.gaussian.load_ply(self.gs_source)
         parser = ArgumentParser(description="Training script parameters")
         self.pipe = PipelineParams(parser)
@@ -507,14 +507,7 @@ class ViserViewer:
             semantic_map_viz = semantic_map_viz.permute(2, 0, 1)  # 512 512 3 to 3 512 512
             render_pkg["semantic"] = semantic_map_viz[None]
             render_pkg["masks"] = semantic_map[None]  # 1, 1, H, W
-        feature_map = render(
-                cam,
-                self.gaussian,
-                self.pipe,
-                self.background_tensor,
-                render_feature=True,
-            )["render_feature"]
-        print(feature_map.shape)
+
         render_pkg["sam_masks"] = []
         render_pkg["point2ds"] = []
         if sam:
