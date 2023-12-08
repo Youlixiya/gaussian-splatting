@@ -1,15 +1,18 @@
 
 import os
+import cv2
 import torch
 import torchvision
 import random
 import math
+import clip
 import numpy as np
 from copy import deepcopy
 from PIL import Image
 import time
 import viser
 import viser.transforms as tf
+import torch.nn.functional as F
 from omegaconf import OmegaConf
 from collections import deque
 from typing import Any, Dict
@@ -20,7 +23,7 @@ from gaussian_renderer import render
 from scene.camera_scene import CamScene
 from utils.graphics_utils import getWorld2View2, getProjectionMatrix
 from utils.camera_utils import project, unproject
-from utils.sam import LangSAMTextSegmentor
+from utils.extract_masks import MaskDataset
 from argparse import ArgumentParser
 from arguments import ModelParams, PipelineParams, get_combined_args
 from scene import Scene, GaussianModel, GaussianFeatureModel
@@ -75,10 +78,11 @@ class ViserViewer:
         self.colmap_dir = cfg.colmap_dir
         self.gaussian = GaussianFeatureModel(sh_degree=3)
         self.gaussian.load_ply(self.gs_source)
+        self.gaussian.load_feature_params(cfg.feature_gs_source)
         parser = ArgumentParser(description="Training script parameters")
         self.pipe = PipelineParams(parser)
         # self.set_system(System(self.gaussian, pipe, background_tensor))
-        self.device = "cuda:0"
+        self.device = "cuda"
         self.port = 8080
 
         self.use_sam = False
@@ -98,62 +102,26 @@ class ViserViewer:
         self.colmap_cameras = None
         self.render_cameras = None
         if self.colmap_dir is not None:
-            scene = CamScene(self.colmap_dir, h=512, w=512)
+            scene = CamScene(self.colmap_dir, h=-1, w=-1)
             self.cameras_extent = scene.cameras_extent
             self.colmap_cameras = scene.cameras
+        #     self.maskdataset = MaskDataset(self.colmap_dir, self.colmap_cameras)
+        #     print(self.maskdataset[0])
 
         self.background_tensor = torch.tensor(
             [0, 0, 0], dtype=torch.float32, device="cuda"
         )
-        self.edit_frames = {}
         self.origin_frames = {}
         self.masks_2D = {}
-        self.text_segmentor = GroundMobileSAM(device=self.device)
+        self.clip_model, self.preprocess = clip.load(cfg.clip_type, device=self.device)
+        # self.text_segmentor = GroundMobileSAM(device=self.device)
         # self.text_segmentor = GroundSAM(device=self.device)
-        self.sam_predictor = self.text_segmentor.sam_predictor
-        self.sam_predictor.is_image_set = True
-        self.sam_features = {}
-        self.semantic_gauassian_masks = {}
-        self.semantic_gauassian_masks["ALL"] = torch.ones_like(self.gaussian._opacity)
-        
-        with self.server.add_gui_folder("Semantic Tracing"):
-            self.sam_enabled = self.server.add_gui_checkbox(
-                "Enable SAM",
-                initial_value=False,
-            )
-            self.add_sam_points = self.server.add_gui_checkbox(
-                "Add SAM Points", initial_value=False
-            )
-            self.sam_group_name = self.server.add_gui_text(
-                "SAM Group Name", initial_value=""
-            )
-            self.clear_sam_pins = self.server.add_gui_button(
-                "Clear SAM Pins",
-            )
-            self.text_seg_prompt = self.server.add_gui_text(
-                "Text Seg Prompt", initial_value=""
-            )
-            self.semantic_groups = self.server.add_gui_dropdown(
-                "Semantic Group",
-                options=["ALL"],
-            )
-
-            self.seg_cam_num = self.server.add_gui_slider(
-                "Seg Camera Nums", min=6, max=200, step=1, initial_value=24
-            )
-
-            self.mask_thres = self.server.add_gui_slider(
-                "Seg Threshold", min=0.2, max=0.99999, step=0.00001, initial_value=0.7, visible=False
-            )
-
-            self.show_semantic_mask = self.server.add_gui_checkbox(
-                "Show Semantic Mask", initial_value=False
-            )
-            self.seg_scale_end_button = self.server.add_gui_button(
-                "End Seg Scale!",
-                visible=False,
-            )
-            self.submit_seg_prompt = self.server.add_gui_button("Tracing Begin!")
+        # self.sam_predictor = self.text_segmentor.sam_predictor
+        # self.sam_predictor.is_image_set = True
+        # self.sam_features = {}
+        with self.server.add_gui_folder("Sematic Query"):
+            self.text_prompt = self.server.add_gui_text('Text Prompt', '')
+            self.show_sematic_map = self.server.add_gui_checkbox("Show Sematic Map", initial_value=False)
         with self.server.add_gui_folder("Render Setting"):
             self.reset_view_button = self.server.add_gui_button("Reset View")
 
@@ -271,41 +239,6 @@ class ViserViewer:
             def _(_):
                 self.need_update = True
         
-        @self.submit_seg_prompt.on_click
-        def _(_):
-            if not self.sam_enabled.value:
-                text_prompt = self.text_seg_prompt.value
-                print("[Segmentation Prompt]", text_prompt)
-                _, semantic_gaussian_mask = self.update_mask(text_prompt)
-            else:
-                text_prompt = self.sam_group_name.value
-                # buggy here, if self.sam_enabled == True, will raise strange errors. (Maybe caused by multi-threading access to the same SAM model)
-                self.sam_enabled.value = False
-                self.add_sam_points.value = False
-                # breakpoint()
-                _, semantic_gaussian_mask = self.update_sam_mask_with_point_prompt(
-                    save_mask=True
-                )
-
-            self.semantic_gauassian_masks[text_prompt] = semantic_gaussian_mask
-            if text_prompt not in self.semantic_groups.options:
-                self.semantic_groups.options += (text_prompt,)
-            self.semantic_groups.value = text_prompt
-
-        @self.mask_thres.on_update
-        def _(_):
-            self.seg_scale = True
-        
-        @self.seg_scale_end_button.on_click
-        def _(_):
-            self.seg_scale_end = True
-        
-        @self.semantic_groups.on_update
-        def _(_):
-            semantic_mask = self.semantic_gauassian_masks[self.semantic_groups.value]
-            self.gaussian.set_mask(semantic_mask)
-            # self.gaussian.apply_grad_mask(semantic_mask)
-        
         with torch.no_grad():
             self.frames = []
             random.seed(0)
@@ -322,18 +255,20 @@ class ViserViewer:
             for frame in self.frames:
                 frame.visible = self.frame_show.value
             self.server.world_axes.visible = self.frame_show.value
-
-        @self.server.on_scene_click
-        def _(pointer):
-            self.click_cb(pointer)
-            
-        @self.extract_mesh_button.on_click
-        def _(_):
-            density_thresh = 1
-            path = os.path.join(os.path.basename(os.path.abspath(os.path.join(self.gs_source, os.pardir))), 'mesh.ply')
-            mesh = self.gaussian.extract_mesh(path, density_thresh)
-            mesh.write_ply(path)
-        
+    @torch.no_grad()
+    def get_sematic_map(self, render_feature):
+        h, w = render_feature.shape[1:]
+        text_prompt = clip.tokenize([self.text_prompt.value]).to(self.device)
+        text_features = self.clip_model.encode_text(text_prompt)
+        text_features /= text_features.norm(dim=-1, keepdim=True)
+        similarity = (text_features @ torch.stack(self.gaussian.sematic_table.table, dim=-1).half()).softmax(dim=-1).squeeze(0)
+        max_index = torch.argmax(similarity)
+        query_embedding = self.gaussian.sematic_table.table[max_index]
+        query_embedding_low_dim = self.gaussian.sematic_compressor(query_embedding.unsqueeze(0))
+        pred_sematic = render_feature + self.gaussian.sematic_decoder(render_feature.unsqueeze(0) + query_embedding_low_dim[..., None, None]).squeeze(0)
+        sematic_map = F.cosine_similarity(query_embedding_low_dim, pred_sematic.reshape(self.gaussian.feature_dim, -1).permute(1, 0)).reshape(-1, h, w).permute(1, 2, 0).cpu().numpy()
+        sematic_map = (sematic_map - np.min(sematic_map)) / (np.max(sematic_map) - np.min(sematic_map))
+        return sematic_map
     def make_one_camera_pose_frame(self, idx):
         cam = self.colmap_cameras[idx]
         # wxyz = tf.SO3.from_matrix(cam.R.T).wxyz
@@ -473,8 +408,6 @@ class ViserViewer:
         self,
         cam,
         local=False,
-        sam=False,
-        train=False,
     ) -> Dict[str, Any]:
         self.gaussian.localize = local
 
@@ -485,53 +418,21 @@ class ViserViewer:
             render_pkg["visibility_filter"],
             render_pkg["radii"],
         )
-        if train:
-            self.viewspace_point_tensor = viewspace_point_tensor
-            self.radii = radii
-            self.visibility_filter = self.radii > 0.0
-        if self.gaussian.mask is not None:
-            semantic_map = render(
-                cam,
-                self.gaussian,
-                self.pipe,
-                self.background_tensor,
-                override_color=self.gaussian.mask[..., None].float().repeat(1, 3),
-            )["render"]
-            semantic_map = torch.norm(semantic_map, dim=0)
-            semantic_map = semantic_map > 0.0  # 1, H, W
-            semantic_map_viz = image.detach().clone()  # C, H, W
-            semantic_map_viz = semantic_map_viz.permute(1, 2, 0)  # 3 512 512 to 512 512 3
-            semantic_map_viz[semantic_map] = 0.50 * semantic_map_viz[
-                semantic_map
-            ] + 0.50 * torch.tensor([1.0, 0.0, 0.0], device="cuda")
-            semantic_map_viz = semantic_map_viz.permute(2, 0, 1)  # 512 512 3 to 3 512 512
-            render_pkg["semantic"] = semantic_map_viz[None]
-            render_pkg["masks"] = semantic_map[None]  # 1, 1, H, W
-        feature_map = render(
-                cam,
-                self.gaussian,
-                self.pipe,
-                self.background_tensor,
-                render_feature=True,
-            )["render_feature"]
-        print(feature_map.shape)
-        render_pkg["sam_masks"] = []
-        render_pkg["point2ds"] = []
-        if sam:
-            if hasattr(self, "points3d") and len(self.points3d) > 0:
-                sam_output = self.sam_predict(image, cam)
-                if sam_output is not None:
-                    render_pkg["sam_masks"].append(sam_output[0])
-                    render_pkg["point2ds"].append(sam_output[1])
-
-        self.gaussian.localize = False  # reverse
-
-        # render_pkg["semantic"] = semantic_map_viz[None]
-        # render_pkg["masks"] = semantic_map[None]  # 1, 1, H, W
-
         image = image.permute(1, 2, 0)[None]  # C H W to 1 H W C
         render_pkg["comp_rgb"] = image  # 1 H W C
+        if self.show_sematic_map.value and self.text_prompt.value:
+            render_feature = render(cam, self.gaussian, self.pipe, self.background_tensor, render_feature=True)['render_feature']
+            sematic_map = self.get_sematic_map(render_feature)
+            
+            image_np = (image.clone()[0].cpu().numpy())
+            sematic_map_rgb = cv2.cvtColor(cv2.applyColorMap(np.uint8(sematic_map * 255), cv2.COLORMAP_JET), cv2.COLOR_BGR2RGB)
+            sematic_map_rgb = np.float32(sematic_map_rgb) / 255
 
+            heatmap = sematic_map_rgb + image_np
+            heatmap = heatmap / np.max(heatmap)
+            # heat_map = cv2.addWeighted (image_np, 0.7, sematic_map_rgb, 0.3, 0)
+            render_pkg['heat_map'] = heatmap
+        
         depth = render_pkg["depth_3dgs"]
         depth = depth.permute(1, 2, 0)[None]
         render_pkg["depth"] = depth
@@ -686,31 +587,31 @@ class ViserViewer:
     def prepare_output_image(self, output):
         out_key = self.renderer_output.value
         out_img = output[out_key][0]  # H W C
-        if out_key == "comp_rgb":
-            if self.show_semantic_mask.value and "semantic" in output.keys():
-                out_img = output["semantic"][0].moveaxis(0, -1)
-        elif out_key == "masks":
-            out_img = output["masks"][0].to(torch.float32)[..., None].repeat(1, 1, 3)
-        if out_img.dtype == torch.float32:
+        # if out_key == "comp_rgb":
+        #     # if self.show_semantic_mask.value and "semantic" in output.keys():
+        #     #     out_img = output["semantic"][0].moveaxis(0, -1)
+        # elif out_key == "masks":
+        #     out_img = output["masks"][0].to(torch.float32)[..., None].repeat(1, 1, 3)
+        if out_img.dtype == torch.float32 and out_key != 'heat_map':
             out_img = out_img.clamp(0, 1)
             out_img = (out_img * 255).to(torch.uint8).cpu().to(torch.uint8)
             out_img = out_img.moveaxis(-1, 0)  # C H W
 
-        if self.sam_enabled.value:
-            if "sam_masks" in output and len(output["sam_masks"]) > 0:
-                try:
-                    out_img = torchvision.utils.draw_segmentation_masks(
-                        out_img, output["sam_masks"][0]
-                    )
+        # if self.sam_enabled.value:
+        #     if "sam_masks" in output and len(output["sam_masks"]) > 0:
+        #         try:
+        #             out_img = torchvision.utils.draw_segmentation_masks(
+        #                 out_img, output["sam_masks"][0]
+        #             )
 
-                    out_img = torchvision.utils.draw_keypoints(
-                        out_img,
-                        output["point2ds"][0][None, ...],
-                        colors="blue",
-                        radius=5,
-                    )
-                except Exception as e:
-                    print(e)
+        #             out_img = torchvision.utils.draw_keypoints(
+        #                 out_img,
+        #                 output["point2ds"][0][None, ...],
+        #                 colors="blue",
+        #                 radius=5,
+        #             )
+        #         except Exception as e:
+        #             print(e)
 
         # if (
         #     self.draw_bbox.value
@@ -725,7 +626,10 @@ class ViserViewer:
         #     ] = 0
 
         self.renderer_output.options = list(output.keys())
-        return out_img.cpu().moveaxis(0, -1).numpy().astype(np.uint8)
+        if out_key == 'heat_map':
+            return out_img
+        else:
+            return out_img.cpu().moveaxis(0, -1).numpy().astype(np.uint8)
     
     # @property
     # def camera(self):
@@ -820,7 +724,7 @@ class ViserViewer:
                 # full_proj_transform = (world_view_transform.unsqueeze(0).bmm(projection_matrix.unsqueeze(0))).squeeze(0)
                 # cam = MiniCam(W, H, camera.fov, camera.fov, znear, zfar, world_view_transform, full_proj_transform)
                 cam = self.camera
-                output = self.render(cam, sam=self.sam_enabled.value)
+                output = self.render(cam)
                 out = self.prepare_output_image(output)
                 # cam = self.camera
                 # c2w = torch.from_numpy(get_c2w(camera)).to(self.device)
@@ -870,7 +774,9 @@ class System:
 if __name__ == '__main__':
     parser = ArgumentParser()
     parser.add_argument("--gs_source", type=str, required=True)  # gs ply or obj file?
+    parser.add_argument("--feature_gs_source", type=str, required=True)  # feature gs pt file?
     parser.add_argument("--colmap_dir", type=str, required=True)  #
+    parser.add_argument("--clip_type", type=str, default='ViT-B/32')  # gs ply or obj file?
     args = parser.parse_args()
     # gaussians = GaussianModel(sh_degree=3)
     # gaussians.load_ply(os.path.join(args.model_path,

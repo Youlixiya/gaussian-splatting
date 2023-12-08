@@ -34,7 +34,7 @@ from gaussian_renderer import camera2rasterizer
 from knn import K_nearest_neighbors
 from utils.mesh import Mesh
 from utils.mesh_utils import decimate_mesh, clean_mesh
-
+from scene.feature_model import Codebook, MLP, SematicTable
 import kiui
 # from threestudio.utils.typing import Bool, Tensor
 
@@ -575,9 +575,25 @@ class GaussianModel:
 
 class GaussianFeatureModel(GaussianModel):
 
-    def __init__(self, sh_degree : int, feature_dim : int = 16):
+    def __init__(self,
+                 sh_degree : int,
+                 feature_dim=16,
+                #  codebook_length=300,
+                 embedding_dim=512,
+                 hidden_dim=32,
+                 layers=3,
+                 device='cuda'):
         super().__init__(sh_degree)
         self.feature_dim = feature_dim
+        self.device = device
+        # self.codebook = Codebook(codebook_length, embedding_dim)
+        self.sematic_table = SematicTable()
+        self.sematic_compressor = nn.Linear(embedding_dim, feature_dim).to(device)
+        self.sematic_decoder = MLP(feature_dim, hidden_dim, feature_dim, layers).to(device)
+        # self.mask_decoder = MLP(feature_dim, hidden_dim, 1, layers).to(device)
+        # self.sematic_decoder = MLP(2 * feature_dim, hidden_dim, feature_dim, layers)
+        # self.mask_decoder = MLP(2 * feature_dim, hidden_dim, 1, layers).to(device)
+        
 
     def capture(self):
         return (
@@ -634,12 +650,52 @@ class GaussianFeatureModel(GaussianModel):
         for idx, attr_name in enumerate(rot_names):
             rots[:, idx] = np.asarray(plydata.elements[0][attr_name])
 
-        self._xyz = nn.Parameter(torch.tensor(xyz, dtype=torch.float, device="cuda").requires_grad_(True))
-        self._features_dc = nn.Parameter(torch.tensor(features_dc, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
-        self._features_rest = nn.Parameter(torch.tensor(features_extra, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
+        self._xyz = nn.Parameter(torch.tensor(xyz, dtype=torch.float, device="cuda").requires_grad_(False))
+        self._features_dc = nn.Parameter(torch.tensor(features_dc, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(False))
+        self._features_rest = nn.Parameter(torch.tensor(features_extra, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(False))
         self._features = nn.Parameter(torch.randn((self._xyz.shape[0], self.feature_dim), dtype=torch.float, device="cuda").requires_grad_(True))
-        self._opacity = nn.Parameter(torch.tensor(opacities, dtype=torch.float, device="cuda").requires_grad_(True))
-        self._scaling = nn.Parameter(torch.tensor(scales, dtype=torch.float, device="cuda").requires_grad_(True))
-        self._rotation = nn.Parameter(torch.tensor(rots, dtype=torch.float, device="cuda").requires_grad_(True))
+        self._opacity = nn.Parameter(torch.tensor(opacities, dtype=torch.float, device="cuda").requires_grad_(False))
+        self._scaling = nn.Parameter(torch.tensor(scales, dtype=torch.float, device="cuda").requires_grad_(False))
+        self._rotation = nn.Parameter(torch.tensor(rots, dtype=torch.float, device="cuda").requires_grad_(False))
 
         self.active_sh_degree = self.max_sh_degree
+    
+    def save_feature_params(self, path, iter):
+        mkdir_p(os.path.dirname(path))
+        state = {
+            'features': self._features.detach().cpu().numpy(),
+            'sematic_table': self.sematic_table.table,
+            'sematic_compressor': self.sematic_compressor.state_dict(),
+            'sematic_decoder': self.sematic_decoder.state_dict()
+        }
+        torch.save(state, os.path.join(path, f'feature_gs_{iter}.pt'))
+    
+    def load_feature_params(self, params_path):
+        state = torch.load(params_path)
+        self._features = nn.Parameter(torch.tensor(state['features'], dtype=torch.float, device="cuda").requires_grad_(False))
+        self.sematic_table.table = state['sematic_table']
+        self.sematic_compressor.load_state_dict(state['sematic_compressor'])
+        self.sematic_decoder.load_state_dict(state['sematic_decoder'])
+        
+        
+    
+    def feature_training_setup(self, training_args):
+
+        l = [
+            {'params': [self._features], 'lr': training_args.extra_feature_lr_init, "name": "extra_features"},
+            {'params': self.sematic_compressor.parameters(), 'lr': training_args.extra_feature_lr_init, "name": "sematic_compressor"},
+            {'params': self.sematic_decoder.parameters(), 'lr': training_args.extra_feature_lr_init, "name": "sematic_decoder"},
+        ]
+
+        self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
+        self.feature_scheduler_args = get_expon_lr_func(lr_init=training_args.extra_feature_lr_init,
+                                                    lr_final=training_args.extra_feature_lr_final,
+                                                    lr_delay_mult=training_args.extra_feature_lr_delay_mult,
+                                                    max_steps=training_args.extra_feature_lr_max_steps)
+    def update_learning_rate(self, iteration):
+        ''' Learning rate scheduling per step '''
+        for param_group in self.optimizer.param_groups:
+            if param_group["name"] in ["extra_features", "sematic_compressor", "sematic_decoder"]:
+                lr = self.feature_scheduler_args(iteration)
+                param_group['lr'] = lr
+                return lr

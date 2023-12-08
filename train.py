@@ -10,16 +10,21 @@
 #
 
 import os
+import cv2
 import torch
+from torch import nn
+import torch.nn.functional as F
 from random import randint
 from utils.loss_utils import l1_loss, ssim
 from gaussian_renderer import render, network_gui
 import sys
-from scene import Scene, GaussianModel
+from scene import Scene, GaussianModel, GaussianFeatureModel
+from scene.camera_scene import CamScene
 from utils.general_utils import safe_state
 import uuid
 from tqdm import tqdm
 from utils.image_utils import psnr
+from utils.extract_masks import MaskDataset
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
 try:
@@ -28,108 +33,153 @@ try:
 except ImportError:
     TENSORBOARD_FOUND = False
 
-def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
-    first_iter = 0
-    tb_writer = prepare_output_and_logger(dataset)
-    gaussians = GaussianModel(dataset.sh_degree)
-    scene = Scene(dataset, gaussians)
-    gaussians.training_setup(opt)
-    if checkpoint:
-        (model_params, first_iter) = torch.load(checkpoint)
-        gaussians.restore(model_params, opt)
+def get_cosine_similarities(vectors, query_vector):
+    return F.cosine_similarity(query_vector.unsqueeze(0), vectors, dim=1)
 
-    bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
+def training(args, dataset, opt, pipe, saving_iterations):
+    cur_iter = 0
+    # tb_writer = prepare_output_and_logger(dataset)
+    gaussians = GaussianFeatureModel(dataset.sh_degree, device='cuda')
+    gaussians.load_ply(args.gs_source)
+    img_name = os.listdir(os.path.join(args.colmap_dir, args.images))[0]
+    h, w = cv2.imread(os.path.join(args.colmap_dir, args.images, img_name)).shape[:2]
+    scene = CamScene(args.colmap_dir, h=h, w=w)
+
+    gaussians.feature_training_setup(opt)
+
+    bg_color = [0] * gaussians.feature_dim
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
     iter_start = torch.cuda.Event(enable_timing = True)
     iter_end = torch.cuda.Event(enable_timing = True)
 
     viewpoint_stack = None
-    ema_loss_for_log = 0.0
-    progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
-    first_iter += 1
-    for iteration in range(first_iter, opt.iterations + 1):        
-        if network_gui.conn == None:
-            network_gui.try_connect()
-        while network_gui.conn != None:
-            try:
-                net_image_bytes = None
-                custom_cam, do_training, pipe.convert_SHs_python, pipe.compute_cov3D_python, keep_alive, scaling_modifer = network_gui.receive()
-                if custom_cam != None:
-                    net_image = render(custom_cam, gaussians, pipe, background, scaling_modifer)["render"]
-                    net_image_bytes = memoryview((torch.clamp(net_image, min=0, max=1.0) * 255).byte().permute(1, 2, 0).contiguous().cpu().numpy())
-                network_gui.send(net_image_bytes, dataset.source_path)
-                if do_training and ((iteration < int(opt.iterations)) or not keep_alive):
-                    break
-            except Exception as e:
-                network_gui.conn = None
+    loss_for_log = 0.0
+    progress_bar = tqdm(range(cur_iter, opt.feature_iterations), desc="Training Feature GS progress")
+    mask_dataset = MaskDataset(args.colmap_dir, scene.cameras.copy())
+    bce_loss = nn.BCELoss()
+    while cur_iter < opt.feature_iterations:
+        index = randint(0, len(mask_dataset)-1)
+        viewpoint_stack = scene.cameras.copy()
+        viewpoint_cam = viewpoint_stack.pop(index)
+        render_pkg = render(viewpoint_cam, gaussians, pipe, background, render_feature=True)
+        render_feature = render_pkg['render_feature']
+        h, w = render_feature.shape[1:]
+        masks_embeddings = mask_dataset[index]
+        total_loss = torch.empty(0).cuda()
+        for i in range(len(masks_embeddings)):
+            cur_iter += 1
+            iter_start.record()
+            gaussians.update_learning_rate(cur_iter)
+            mask_embedding = masks_embeddings[i]
+            mask = torch.tensor(mask_embedding['mask'], dtype=torch.bool, device='cuda').unsqueeze(0)
+            embedding = mask_embedding['clip_embedding'].float().cuda()
+            if gaussians.sematic_table.is_empty():
+                gaussians.sematic_table.append(embedding)
+            else:
+                query_cosine_similarities = gaussians.sematic_table.get_cosine_similarities(embedding)
+                max_index = torch.argmax(query_cosine_similarities)
+                max_cosine_similaritie = query_cosine_similarities[max_index]
+                if max_cosine_similaritie > 0.9:
+                    # print(max_cosine_similaritie)
+                    # print(max_index)
+                    # print(gaussians.sematic_table.table[max_index].shape)
+                    new_embedding = F.normalize((max_cosine_similaritie * gaussians.sematic_table.table[max_index] + (1 - max_cosine_similaritie) * embedding).unsqueeze(0)).squeeze(0)
+                    # new_embedding = max_cosine_similaritie * gaussians.sematic_table.table[max_index] + (1 - max_cosine_similaritie) * embedding
+                    # print(new_embedding.shape)
+                    gaussians.sematic_table.table[max_index] = new_embedding
+                    embedding = new_embedding
+                else:
+                    gaussians.sematic_table.append(embedding)
+            embedding_low_dim = gaussians.sematic_compressor(embedding.unsqueeze(0)).squeeze(0)
+            # print(render_feature.shape)
+            # print(embedding_low_dim[None, :, None, None].shape)
+            # embedding_low_dim_map = torch.stack(h * w * [embedding_low_dim], dim=-1).reshape(1, -1, h, w)
+            # mask_decoder_input = render_feature.unsqueeze(0) + embedding_low_dim[None, :, None, None]
+            # mask_decoder_input = torch.cat([render_feature.unsqueeze(0), embedding_low_dim_map], dim=1)
+            # pred_mask = torch.sigmoid(gaussians.mask_decoder(mask_decoder_input).squeeze(0))
+            # pred_mask = torch.sigmoid(gaussians.mask_decoder(render_feature.unsqueeze(0) + embedding_low_dim[None, :, None, None]).squeeze(0))
+            pred_sematic = render_feature + gaussians.sematic_decoder(render_feature.unsqueeze(0) + embedding_low_dim[None, :, None, None]).squeeze(0)
+            cosine_similarities_map = get_cosine_similarities(pred_sematic.reshape(-1, h * w).permute(1, 0), embedding_low_dim).reshape(h, w, 1).permute(2, 0, 1)
+            pos_cosine_similarities_map = cosine_similarities_map[mask]
+            neg_cosine_similarities_map = cosine_similarities_map[~mask]
+            # pred_pos_mask = pred_mask[mask]
+            # pred_neg_mask = pred_mask[~mask]
+            # pred_pose_sematic = pred_sematic[mask.squeeze(0)]
+            pos_mask = torch.ones_like(pos_cosine_similarities_map, device='cuda')
+            # pos_mask = torch.ones_like(pred_pos_mask, device='cuda')
+            neg_mask = torch.zeros_like(neg_cosine_similarities_map, device='cuda')
+            
+            cosine_similarities_loss = (pos_mask.reshape(-1) - pos_cosine_similarities_map.reshape(-1)).mean() + \
+                                        ((neg_cosine_similarities_map.reshape(-1) - neg_mask.reshape(-1))).mean()
+            # bce_loss = cosine_similarities_map.reshape(-1), mask.float().reshape(-1)
+            # cosine_similarities_loss = (bce_loss(pos_cosine_similarities_map.reshape(-1), pos_mask.reshape(-1)).mean() + \
+            #                             bce_loss(neg_cosine_similarities_map.reshape(-1), neg_mask.reshape(-1)).mean()) / 2
+            
+            # print(pos_mask.reshape(-1).shape)
+            # print(pred_pos_mask.reshape(-1).shape)
+            # print(neg_mask.reshape(-1).shape)
+            # print(pred_neg_mask.reshape(-1).shape)
+            # print(neg_cosine_similarities_map.reshape(-1).shape)
+            
+            
+            # adaptive_bce_loss= (bce_loss(pos_mask.reshape(-1), pred_pos_mask.reshape(-1))).mean() 
+                            #    (neg_cosine_similarities_map.reshape(-1) * bce_loss(neg_mask.reshape(-1), pred_neg_mask.reshape(-1))).mean()
+            # feature_dim = gaussians.feature_dim
+            # norm_loss = 1 - torch.norm(embedding_low_dim) + (pos_mask.reshape(-1) - torch.norm(pred_pose_sematic.reshape(feature_dim, -1), dim=-1).reshape(-1)).mean()
+            # loss = cosine_similarities_loss + adaptive_bce_loss + norm_loss
+            # loss = bce_loss
+            loss = cosine_similarities_loss
+            loss.backward(retain_graph=True)
+            # total_loss += loss
+            # loss.backward()
 
-        iter_start.record()
+            iter_end.record()
+            
+            with torch.no_grad():
+                # Progress bar
+                loss_for_log = loss.item()
+                # if iteration % 10 == 0:
+                progress_bar.set_postfix({"Loss": f"{loss_for_log:.{7}f}", "Sematic_table_len": len(gaussians.sematic_table)})
+                progress_bar.update(1)
+                if cur_iter + 1 == opt.feature_iterations:
+                    progress_bar.close()
+                if (cur_iter + 1 in saving_iterations):
+                    print("\n[ITER {}] Saving Feature Gaussians".format(cur_iter + 1))
+                    save_path = os.path.abspath(os.path.join(args.gs_source, os.pardir))
+                    gaussians.save_feature_params(save_path, cur_iter + 1)
 
-        gaussians.update_learning_rate(iteration)
+                # Log and save
+                # training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background))
+                # if (iteration in saving_iterations):
+                #     print("\n[ITER {}] Saving Gaussians".format(iteration))
+                #     scene.save(iteration)
 
-        # Every 1000 its we increase the levels of SH up to a maximum degree
-        if iteration % 1000 == 0:
-            gaussians.oneupSHdegree()
+                # # Densification
+                # if iteration < opt.densify_until_iter:
+                #     # Keep track of max radii in image-space for pruning
+                #     gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
+                #     gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
 
-        # Pick a random Camera
-        if not viewpoint_stack:
-            viewpoint_stack = scene.getTrainCameras().copy()
-        viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
+                #     if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
+                #         size_threshold = 20 if iteration > opt.opacity_reset_interval else None
+                #         gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold)
+                    
+                #     if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
+                #         gaussians.reset_opacity()
 
-        # Render
-        if (iteration - 1) == debug_from:
-            pipe.debug = True
+                # Optimizer step
+                if cur_iter + 1 < opt.feature_iterations:
+                    gaussians.optimizer.step()
+                    gaussians.optimizer.zero_grad(set_to_none = True)
 
-        bg = torch.rand((3), device="cuda") if opt.random_background else background
-
-        render_pkg = render(viewpoint_cam, gaussians, pipe, bg)
-        image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
-
-        # Loss
-        gt_image = viewpoint_cam.original_image.cuda()
-        Ll1 = l1_loss(image, gt_image)
-        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
-        loss.backward()
-
-        iter_end.record()
-
-        with torch.no_grad():
-            # Progress bar
-            ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
-            if iteration % 10 == 0:
-                progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.{7}f}"})
-                progress_bar.update(10)
-            if iteration == opt.iterations:
-                progress_bar.close()
-
-            # Log and save
-            training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background))
-            if (iteration in saving_iterations):
-                print("\n[ITER {}] Saving Gaussians".format(iteration))
-                scene.save(iteration)
-
-            # Densification
-            if iteration < opt.densify_until_iter:
-                # Keep track of max radii in image-space for pruning
-                gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
-                gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
-
-                if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
-                    size_threshold = 20 if iteration > opt.opacity_reset_interval else None
-                    gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold)
-                
-                if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
-                    gaussians.reset_opacity()
-
-            # Optimizer step
-            if iteration < opt.iterations:
-                gaussians.optimizer.step()
-                gaussians.optimizer.zero_grad(set_to_none = True)
-
-            if (iteration in checkpoint_iterations):
-                print("\n[ITER {}] Saving Checkpoint".format(iteration))
-                torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
+                # if (cur_iter + 1 in checkpoint_iterations):
+                #     print("\n[ITER {}] Saving Checkpoint".format(iteration))
+                #     torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
+        # total_loss /=  len(masks_embeddings) 
+        # total_loss.backward()
+            
+            
 
 def prepare_output_and_logger(args):    
     if not args.model_path:
@@ -196,27 +246,27 @@ if __name__ == "__main__":
     lp = ModelParams(parser)
     op = OptimizationParams(parser)
     pp = PipelineParams(parser)
-    parser.add_argument('--ip', type=str, default="127.0.0.1")
-    parser.add_argument('--port', type=int, default=6009)
-    parser.add_argument('--debug_from', type=int, default=-1)
-    parser.add_argument('--detect_anomaly', action='store_true', default=False)
-    parser.add_argument("--test_iterations", nargs="+", type=int, default=[5_000])
-    parser.add_argument("--save_iterations", nargs="+", type=int, default=[5_000])
-    parser.add_argument("--quiet", action="store_true")
-    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
-    parser.add_argument("--start_checkpoint", type=str, default = None)
+    # parser.add_argument("--test_iterations", nargs="+", type=int, default=[5_000])
+    parser.add_argument("--save_iterations", nargs="+", type=int, default=[1_000, 10_000])
+    # parser.add_argument("--quiet", action="store_true")
+    # parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
+    # parser.add_argument("--start_checkpoint", type=str, default = None)
+    # parser.add_argument('--feature_gs', action='store_true', default=False)
+    parser.add_argument("--gs_source", type=str, required=True)  # gs ply or obj file?
+    # parser.add_argument("--images", type=str, default='images_4', required=True)  # gs ply or obj file?
+    parser.add_argument("--colmap_dir", type=str, required=True)  #
     args = parser.parse_args(sys.argv[1:])
-    args.save_iterations.append(args.iterations)
+    # args.save_iterations.append(args.iterations)
     
-    print("Optimizing " + args.model_path)
+    # print("Optimizing " + args.model_path)
 
-    # Initialize system state (RNG)
-    safe_state(args.quiet)
+    # # Initialize system state (RNG)
+    # safe_state(args.quiet)
 
-    # Start GUI server, configure and run training
-    # network_gui.init(args.ip, args.port)
-    torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
+    # # Start GUI server, configure and run training
+    # # network_gui.init(args.ip, args.port)
+    # torch.autograd.set_detect_anomaly(args.detect_anomaly)
+    training(args, lp.extract(args), op.extract(args), pp.extract(args), args.save_iterations)
 
     # All done
     print("\nTraining complete.")

@@ -71,6 +71,7 @@ class PipelineParams(ParamGroup):
 class OptimizationParams(ParamGroup):
     def __init__(self, parser):
         self.iterations = 30_000
+        self.feature_iterations = 10_000
         self.position_lr_init = 0.00016
         self.position_lr_final = 0.0000016
         self.position_lr_delay_mult = 0.01
@@ -81,6 +82,11 @@ class OptimizationParams(ParamGroup):
         self.rotation_lr = 0.001
         self.percent_dense = 0.01
         self.lambda_dssim = 0.2
+        self.extra_feature_lr = 0.001
+        self.extra_feature_lr_init = 0.001
+        self.extra_feature_lr_final = 0.00001
+        self.extra_feature_lr_delay_mult = 0.01
+        self.extra_feature_lr_max_steps = 10_000
         self.densification_interval = 100
         self.opacity_reset_interval = 3000
         self.densify_from_iter = 500
