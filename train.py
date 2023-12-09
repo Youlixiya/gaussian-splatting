@@ -57,7 +57,7 @@ def training(args, dataset, opt, pipe, saving_iterations):
     loss_for_log = 0.0
     progress_bar = tqdm(range(cur_iter, opt.feature_iterations), desc="Training Feature GS progress")
     mask_dataset = MaskDataset(args.colmap_dir, scene.cameras.copy())
-    bce_loss = nn.BCELoss()
+    bce_loss_func = nn.BCELoss()
     while cur_iter < opt.feature_iterations:
         index = randint(0, len(mask_dataset)-1)
         viewpoint_stack = scene.cameras.copy()
@@ -95,24 +95,24 @@ def training(args, dataset, opt, pipe, saving_iterations):
             # print(render_feature.shape)
             # print(embedding_low_dim[None, :, None, None].shape)
             # embedding_low_dim_map = torch.stack(h * w * [embedding_low_dim], dim=-1).reshape(1, -1, h, w)
-            # mask_decoder_input = render_feature.unsqueeze(0) + embedding_low_dim[None, :, None, None]
+            mask_decoder_input = render_feature.unsqueeze(0) + embedding_low_dim[None, :, None, None]
             # mask_decoder_input = torch.cat([render_feature.unsqueeze(0), embedding_low_dim_map], dim=1)
-            # pred_mask = torch.sigmoid(gaussians.mask_decoder(mask_decoder_input).squeeze(0))
+            pred_mask = torch.sigmoid(gaussians.mask_decoder(mask_decoder_input).squeeze(0))
             # pred_mask = torch.sigmoid(gaussians.mask_decoder(render_feature.unsqueeze(0) + embedding_low_dim[None, :, None, None]).squeeze(0))
-            pred_sematic = render_feature + gaussians.sematic_decoder(render_feature.unsqueeze(0) + embedding_low_dim[None, :, None, None]).squeeze(0)
-            cosine_similarities_map = get_cosine_similarities(pred_sematic.reshape(-1, h * w).permute(1, 0), embedding_low_dim).reshape(h, w, 1).permute(2, 0, 1)
-            pos_cosine_similarities_map = cosine_similarities_map[mask]
-            neg_cosine_similarities_map = cosine_similarities_map[~mask]
+            # pred_sematic = render_feature + gaussians.sematic_decoder(render_feature.unsqueeze(0) + embedding_low_dim[None, :, None, None]).squeeze(0)
+            # cosine_similarities_map = get_cosine_similarities(pred_sematic.reshape(-1, h * w).permute(1, 0), embedding_low_dim).reshape(h, w, 1).permute(2, 0, 1)
+            # pos_cosine_similarities_map = cosine_similarities_map[mask]
+            # neg_cosine_similarities_map = cosine_similarities_map[~mask]
             # pred_pos_mask = pred_mask[mask]
             # pred_neg_mask = pred_mask[~mask]
             # pred_pose_sematic = pred_sematic[mask.squeeze(0)]
-            pos_mask = torch.ones_like(pos_cosine_similarities_map, device='cuda')
+            # pos_mask = torch.ones_like(pos_cosine_similarities_map, device='cuda')
             # pos_mask = torch.ones_like(pred_pos_mask, device='cuda')
-            neg_mask = torch.zeros_like(neg_cosine_similarities_map, device='cuda')
+            # neg_mask = torch.zeros_like(neg_cosine_similarities_map, device='cuda')
             
-            cosine_similarities_loss = (pos_mask.reshape(-1) - pos_cosine_similarities_map.reshape(-1)).mean() + \
-                                        ((neg_cosine_similarities_map.reshape(-1) - neg_mask.reshape(-1))).mean()
-            # bce_loss = cosine_similarities_map.reshape(-1), mask.float().reshape(-1)
+            # cosine_similarities_loss = (pos_mask.reshape(-1) - pos_cosine_similarities_map.reshape(-1)).mean() + \
+            #                             ((neg_cosine_similarities_map.reshape(-1) - neg_mask.reshape(-1))).mean()
+            bce_loss = bce_loss_func(pred_mask.reshape(-1), mask.float().reshape(-1))
             # cosine_similarities_loss = (bce_loss(pos_cosine_similarities_map.reshape(-1), pos_mask.reshape(-1)).mean() + \
             #                             bce_loss(neg_cosine_similarities_map.reshape(-1), neg_mask.reshape(-1)).mean()) / 2
             
@@ -128,8 +128,8 @@ def training(args, dataset, opt, pipe, saving_iterations):
             # feature_dim = gaussians.feature_dim
             # norm_loss = 1 - torch.norm(embedding_low_dim) + (pos_mask.reshape(-1) - torch.norm(pred_pose_sematic.reshape(feature_dim, -1), dim=-1).reshape(-1)).mean()
             # loss = cosine_similarities_loss + adaptive_bce_loss + norm_loss
-            # loss = bce_loss
-            loss = cosine_similarities_loss
+            loss = bce_loss
+            # loss = cosine_similarities_loss
             loss.backward(retain_graph=True)
             # total_loss += loss
             # loss.backward()

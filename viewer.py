@@ -122,6 +122,7 @@ class ViserViewer:
         with self.server.add_gui_folder("Sematic Query"):
             self.text_prompt = self.server.add_gui_text('Text Prompt', '')
             self.show_sematic_map = self.server.add_gui_checkbox("Show Sematic Map", initial_value=False)
+            self.show_mask = self.server.add_gui_checkbox("Show Mask", initial_value=False)
         with self.server.add_gui_folder("Render Setting"):
             self.reset_view_button = self.server.add_gui_button("Reset View")
 
@@ -269,6 +270,18 @@ class ViserViewer:
         sematic_map = F.cosine_similarity(query_embedding_low_dim, pred_sematic.reshape(self.gaussian.feature_dim, -1).permute(1, 0)).reshape(-1, h, w).permute(1, 2, 0).cpu().numpy()
         sematic_map = (sematic_map - np.min(sematic_map)) / (np.max(sematic_map) - np.min(sematic_map))
         return sematic_map
+    @torch.no_grad()
+    def get_mask(self, render_feature):
+        # h, w = render_feature.shape[1:]
+        text_prompt = clip.tokenize([self.text_prompt.value]).to(self.device)
+        text_features = self.clip_model.encode_text(text_prompt)
+        text_features /= text_features.norm(dim=-1, keepdim=True)
+        similarity = (text_features @ torch.stack(self.gaussian.sematic_table.table, dim=-1).half()).softmax(dim=-1).squeeze(0)
+        max_index = torch.argmax(similarity)
+        query_embedding = self.gaussian.sematic_table.table[max_index]
+        query_embedding_low_dim = self.gaussian.sematic_compressor(query_embedding.unsqueeze(0))
+        mask = torch.sigmoid(self.gaussian.mask_decoder(render_feature.unsqueeze(0) + query_embedding_low_dim[..., None, None])).squeeze(0).squeeze(0).cpu().numpy()
+        return mask
     def make_one_camera_pose_frame(self, idx):
         cam = self.colmap_cameras[idx]
         # wxyz = tf.SO3.from_matrix(cam.R.T).wxyz
@@ -433,6 +446,19 @@ class ViserViewer:
             # heat_map = cv2.addWeighted (image_np, 0.7, sematic_map_rgb, 0.3, 0)
             render_pkg['heat_map'] = heatmap
         
+        if self.show_mask.value and self.text_prompt.value:
+            render_feature = render(cam, self.gaussian, self.pipe, self.background_tensor, render_feature=True)['render_feature']
+            mask = self.get_mask(render_feature)[..., None]
+            
+            mask_image = image.clone()[0].cpu().numpy()
+            h, w = mask_image.shape[:2]
+            mask_image = mask * mask_image + (1 - mask) * np.ones([h, w, 1])
+            mask_image = mask_image.astype(np.float32)
+            # mask_image[mask] = (mask_image[mask] * 0.5 + np.array([255, 0, 0]) * 0.5).astype(np.uint8)
+
+
+            render_pkg['mask_image'] = mask_image
+        
         depth = render_pkg["depth_3dgs"]
         depth = depth.permute(1, 2, 0)[None]
         render_pkg["depth"] = depth
@@ -592,7 +618,7 @@ class ViserViewer:
         #     #     out_img = output["semantic"][0].moveaxis(0, -1)
         # elif out_key == "masks":
         #     out_img = output["masks"][0].to(torch.float32)[..., None].repeat(1, 1, 3)
-        if out_img.dtype == torch.float32 and out_key != 'heat_map':
+        if out_img.dtype == torch.float32 and out_key not in ['heat_map', 'mask_image']:
             out_img = out_img.clamp(0, 1)
             out_img = (out_img * 255).to(torch.uint8).cpu().to(torch.uint8)
             out_img = out_img.moveaxis(-1, 0)  # C H W
@@ -626,7 +652,7 @@ class ViserViewer:
         #     ] = 0
 
         self.renderer_output.options = list(output.keys())
-        if out_key == 'heat_map':
+        if out_key in ['heat_map', 'mask_image']:
             return out_img
         else:
             return out_img.cpu().moveaxis(0, -1).numpy().astype(np.uint8)

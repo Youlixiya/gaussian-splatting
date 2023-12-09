@@ -589,8 +589,8 @@ class GaussianFeatureModel(GaussianModel):
         # self.codebook = Codebook(codebook_length, embedding_dim)
         self.sematic_table = SematicTable()
         self.sematic_compressor = nn.Linear(embedding_dim, feature_dim).to(device)
-        self.sematic_decoder = MLP(feature_dim, hidden_dim, feature_dim, layers).to(device)
-        # self.mask_decoder = MLP(feature_dim, hidden_dim, 1, layers).to(device)
+        # self.sematic_decoder = MLP(feature_dim, hidden_dim, feature_dim, layers).to(device)
+        self.mask_decoder = MLP(feature_dim, hidden_dim, 1, layers).to(device)
         # self.sematic_decoder = MLP(2 * feature_dim, hidden_dim, feature_dim, layers)
         # self.mask_decoder = MLP(2 * feature_dim, hidden_dim, 1, layers).to(device)
         
@@ -666,7 +666,7 @@ class GaussianFeatureModel(GaussianModel):
             'features': self._features.detach().cpu().numpy(),
             'sematic_table': self.sematic_table.table,
             'sematic_compressor': self.sematic_compressor.state_dict(),
-            'sematic_decoder': self.sematic_decoder.state_dict()
+            'mask_decoder': self.mask_decoder.state_dict()
         }
         torch.save(state, os.path.join(path, f'feature_gs_{iter}.pt'))
     
@@ -675,7 +675,7 @@ class GaussianFeatureModel(GaussianModel):
         self._features = nn.Parameter(torch.tensor(state['features'], dtype=torch.float, device="cuda").requires_grad_(False))
         self.sematic_table.table = state['sematic_table']
         self.sematic_compressor.load_state_dict(state['sematic_compressor'])
-        self.sematic_decoder.load_state_dict(state['sematic_decoder'])
+        self.mask_decoder.load_state_dict(state['mask_decoder'])
         
         
     
@@ -684,7 +684,7 @@ class GaussianFeatureModel(GaussianModel):
         l = [
             {'params': [self._features], 'lr': training_args.extra_feature_lr_init, "name": "extra_features"},
             {'params': self.sematic_compressor.parameters(), 'lr': training_args.extra_feature_lr_init, "name": "sematic_compressor"},
-            {'params': self.sematic_decoder.parameters(), 'lr': training_args.extra_feature_lr_init, "name": "sematic_decoder"},
+            {'params': self.mask_decoder.parameters(), 'lr': training_args.extra_feature_lr_init, "name": "mask_decoder"},
         ]
 
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
@@ -695,7 +695,7 @@ class GaussianFeatureModel(GaussianModel):
     def update_learning_rate(self, iteration):
         ''' Learning rate scheduling per step '''
         for param_group in self.optimizer.param_groups:
-            if param_group["name"] in ["extra_features", "sematic_compressor", "sematic_decoder"]:
+            if param_group["name"] in ["extra_features", "sematic_compressor", "mask_decoder"]:
                 lr = self.feature_scheduler_args(iteration)
                 param_group['lr'] = lr
                 return lr
