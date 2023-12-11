@@ -24,6 +24,7 @@ from scene.camera_scene import CamScene
 from utils.graphics_utils import getWorld2View2, getProjectionMatrix
 from utils.camera_utils import project, unproject
 from utils.extract_masks import MaskDataset
+from utils.colormaps import ColormapOptions, apply_colormap
 from argparse import ArgumentParser
 from arguments import ModelParams, PipelineParams, get_combined_args
 from scene import Scene, GaussianModel, GaussianFeatureModel
@@ -84,7 +85,7 @@ class ViserViewer:
         # self.set_system(System(self.gaussian, pipe, background_tensor))
         self.device = "cuda"
         self.port = 8080
-
+        self.colors = np.random.random((500, 3))
         self.use_sam = False
         # self.guidance = None
         # self.stop_training = False
@@ -257,31 +258,55 @@ class ViserViewer:
                 frame.visible = self.frame_show.value
             self.server.world_axes.visible = self.frame_show.value
     @torch.no_grad()
-    def get_sematic_map(self, render_feature):
+    def get_sematic_map(self, render_feature): 
         h, w = render_feature.shape[1:]
         text_prompt = clip.tokenize([self.text_prompt.value]).to(self.device)
         text_features = self.clip_model.encode_text(text_prompt)
         text_features /= text_features.norm(dim=-1, keepdim=True)
-        similarity = (text_features @ torch.stack(self.gaussian.sematic_table.table, dim=-1).half()).softmax(dim=-1).squeeze(0)
+        similarity = (100 * text_features @ torch.stack(self.gaussian.sematic_table.table, dim=-1).half()).softmax(dim=-1).squeeze(0)
         max_index = torch.argmax(similarity)
+        print(max_index)
         query_embedding = self.gaussian.sematic_table.table[max_index]
-        query_embedding_low_dim = self.gaussian.sematic_compressor(query_embedding.unsqueeze(0))
-        pred_sematic = render_feature + self.gaussian.sematic_decoder(render_feature.unsqueeze(0) + query_embedding_low_dim[..., None, None]).squeeze(0)
-        sematic_map = F.cosine_similarity(query_embedding_low_dim, pred_sematic.reshape(self.gaussian.feature_dim, -1).permute(1, 0)).reshape(-1, h, w).permute(1, 2, 0).cpu().numpy()
-        sematic_map = (sematic_map - np.min(sematic_map)) / (np.max(sematic_map) - np.min(sematic_map))
+        query_embedding_low_dim = self.gaussian.sematic_compressor(query_embedding.unsqueeze(0).float())
+        sematic_map = F.cosine_similarity(query_embedding_low_dim, render_feature.reshape(self.gaussian.feature_dim, -1).permute(1, 0)).reshape(-1, h, w).permute(1, 2, 0)
+        sematic_map = (sematic_map - sematic_map.min()) / (sematic_map.max() - sematic_map.min())
+        # sematic_map = (sematic_map - np.min(sematic_map)) / (np.max(sematic_map) - np.min(sematic_map))
+        # print(sematic_map)
         return sematic_map
+    
     @torch.no_grad()
     def get_mask(self, render_feature):
-        # h, w = render_feature.shape[1:]
-        text_prompt = clip.tokenize([self.text_prompt.value]).to(self.device)
-        text_features = self.clip_model.encode_text(text_prompt)
-        text_features /= text_features.norm(dim=-1, keepdim=True)
-        similarity = (text_features @ torch.stack(self.gaussian.sematic_table.table, dim=-1).half()).softmax(dim=-1).squeeze(0)
-        max_index = torch.argmax(similarity)
-        query_embedding = self.gaussian.sematic_table.table[max_index]
-        query_embedding_low_dim = self.gaussian.sematic_compressor(query_embedding.unsqueeze(0))
-        mask = torch.sigmoid(self.gaussian.mask_decoder(render_feature.unsqueeze(0) + query_embedding_low_dim[..., None, None])).squeeze(0).squeeze(0).cpu().numpy()
-        return mask
+        h, w = render_feature.shape[1:]
+        instance_index = torch.argmax(self.gaussian.mask_decoder(render_feature.reshape(-1, h * w).permute(1, 0)).softmax(-1), dim=-1).cpu()
+        print(instance_index)
+        instance_map = self.gaussian.instance_colors[instance_index].reshape(h, w, 3)
+        print(instance_map)
+        return instance_map
+    
+    # @torch.no_grad()
+    # def get_mask(self, render_feature):
+    #     h, w = render_feature.shape[1:]
+    #     instance_index = (torch.sigmoid(self.gaussian.mask_decoder(render_feature.reshape(-1, h * w).permute(1, 0)) + 0.5)).long().squeeze(-1).cpu()
+    #     instance_map = self.gaussian.instance_colors[instance_index].reshape(h, w, 3)
+    #     print(instance_map)
+    #     return instance_map
+    
+    # @torch.no_grad()
+    # def get_mask(self, render_feature):
+    #     h, w = render_feature.shape[1:]
+    #     text_prompt = clip.tokenize([self.text_prompt.value]).to(self.device)
+    #     text_features = self.clip_model.encode_text(text_prompt)
+    #     text_features /= text_features.norm(dim=-1, keepdim=True)
+    #     similarity = (100 * text_features @ torch.stack(self.gaussian.sematic_table.table, dim=-1).half()).softmax(dim=-1).squeeze(0)
+    #     max_index = torch.argmax(similarity)
+    #     query_embedding = self.gaussian.sematic_table.table[max_index]
+    #     query_embedding_low_dim = self.gaussian.sematic_compressor(query_embedding.unsqueeze(0).float())
+    #     # print(render_feature.shape)
+    #     # print(query_embedding_low_dim.shape)
+    #     pred_mask = torch.sigmoid(self.gaussian.mask_decoder(render_feature.unsqueeze(0) * query_embedding_low_dim[..., None, None])[0, 0, ...])
+    #     # pred_mask = self.gaussian.mask_decoder(render_feature.unsqueeze(0) * query_embedding_low_dim[..., None, None])[0, 0, ...]
+    #     return pred_mask
+    
     def make_one_camera_pose_frame(self, idx):
         cam = self.colmap_cameras[idx]
         # wxyz = tf.SO3.from_matrix(cam.R.T).wxyz
@@ -436,28 +461,26 @@ class ViserViewer:
         if self.show_sematic_map.value and self.text_prompt.value:
             render_feature = render(cam, self.gaussian, self.pipe, self.background_tensor, render_feature=True)['render_feature']
             sematic_map = self.get_sematic_map(render_feature)
+            heat_map = apply_colormap(sematic_map, ColormapOptions("turbo")).cpu().numpy().astype(np.float32)
+            # print(heat_map.shape)
+            # print(heat_map.shape)
             
-            image_np = (image.clone()[0].cpu().numpy())
-            sematic_map_rgb = cv2.cvtColor(cv2.applyColorMap(np.uint8(sematic_map * 255), cv2.COLORMAP_JET), cv2.COLOR_BGR2RGB)
-            sematic_map_rgb = np.float32(sematic_map_rgb) / 255
+            # image_np = (image.clone()[0].cpu().numpy())
+            # sematic_map_rgb = cv2.cvtColor(cv2.applyColorMap(np.uint8(sematic_map * 255), cv2.COLORMAP_JET), cv2.COLOR_BGR2RGB)
+            # sematic_map_rgb = np.float32(sematic_map_rgb) / 255
 
-            heatmap = sematic_map_rgb + image_np
-            heatmap = heatmap / np.max(heatmap)
+            # heatmap = sematic_map_rgb + image_np
+            # heatmap = heatmap / np.max(heatmap)
             # heat_map = cv2.addWeighted (image_np, 0.7, sematic_map_rgb, 0.3, 0)
-            render_pkg['heat_map'] = heatmap
+            # render_pkg['heat_map'] = (sematic_map_rgb / 255).astype(np.float32)
+            Image.fromarray((heat_map * 255).astype(np.uint8)).save('1.jpg')
+            render_pkg['heat_map'] = torch.tensor(heat_map, dtype=torch.float32)[None]
         
-        if self.show_mask.value and self.text_prompt.value:
+        if self.show_mask.value:
             render_feature = render(cam, self.gaussian, self.pipe, self.background_tensor, render_feature=True)['render_feature']
-            mask = self.get_mask(render_feature)[..., None]
-            
-            mask_image = image.clone()[0].cpu().numpy()
-            h, w = mask_image.shape[:2]
-            mask_image = mask * mask_image + (1 - mask) * np.ones([h, w, 1])
-            mask_image = mask_image.astype(np.float32)
-            # mask_image[mask] = (mask_image[mask] * 0.5 + np.array([255, 0, 0]) * 0.5).astype(np.uint8)
-
-
-            render_pkg['mask_image'] = mask_image
+            pred_mask = self.get_mask(render_feature)
+            Image.fromarray((pred_mask).cpu().numpy().astype(np.uint8)).save('1.jpg')
+            render_pkg['mask_image'] = (pred_mask / 255).to(torch.float32)[None]
         
         depth = render_pkg["depth_3dgs"]
         depth = depth.permute(1, 2, 0)[None]
@@ -612,13 +635,16 @@ class ViserViewer:
     @torch.no_grad()
     def prepare_output_image(self, output):
         out_key = self.renderer_output.value
-        out_img = output[out_key][0]  # H W C
+        if out_key in output.keys():
+            out_img = output[out_key][0]  # H W C
+        else:
+            out_img = output['comp_rgb'][0]
         # if out_key == "comp_rgb":
         #     # if self.show_semantic_mask.value and "semantic" in output.keys():
         #     #     out_img = output["semantic"][0].moveaxis(0, -1)
         # elif out_key == "masks":
         #     out_img = output["masks"][0].to(torch.float32)[..., None].repeat(1, 1, 3)
-        if out_img.dtype == torch.float32 and out_key not in ['heat_map', 'mask_image']:
+        if out_img.dtype == torch.float32:
             out_img = out_img.clamp(0, 1)
             out_img = (out_img * 255).to(torch.uint8).cpu().to(torch.uint8)
             out_img = out_img.moveaxis(-1, 0)  # C H W
@@ -652,54 +678,10 @@ class ViserViewer:
         #     ] = 0
 
         self.renderer_output.options = list(output.keys())
-        if out_key in ['heat_map', 'mask_image']:
-            return out_img
-        else:
-            return out_img.cpu().moveaxis(0, -1).numpy().astype(np.uint8)
-    
-    # @property
-    # def camera(self):
-    #     if len(list(self.server.get_clients().values())) == 0:
-    #         return None
-    #     if self.render_cameras is None and self.colmap_dir is not None:
-    #         self.aspect = list(self.server.get_clients().values())[0].camera.aspect
-    #         self.render_cameras = CamScene(
-    #             self.colmap_dir, h=-1, w=-1, aspect=self.aspect
-    #         ).cameras
-    #         self.begin_call(list(self.server.get_clients().values())[0])
-    #     viser_cam = list(self.server.get_clients().values())[0].camera
-    #     # viser_cam.up_direction = tf.SO3(viser_cam.wxyz) @ np.array([0.0, -1.0, 0.0])
-    #     # viser_cam.look_at = viser_cam.position
-    #     # R = tf.SO3(viser_cam.wxyz).as_matrix()
-    #     # T = -R.T @ viser_cam.position
-    #     # T = viser_cam.position
-    #     if self.render_cameras is None:
-    #         fovy = viser_cam.fov * self.FoV_slider.value
-    #         fovy = viser_cam.fov
-    #     else:
-    #         fovy = self.render_cameras[0].FoVy * self.FoV_slider.value
-    #         fovy = self.render_cameras[0].FoVy
-    #     fovx = 2 * math.atan(math.tan(fovy / 2) * self.aspect)
-    #     # fovy = self.render_cameras[0].FoVy
-    #     # fovx = self.render_cameras[0].FoVx
-    #     # math.tan(self.render_cameras[0].FoVx / 2) / math.tan(self.render_cameras[0].FoVy / 2)
-    #     # math.tan(fovx/2) / math.tan(fovy/2)
-
-    #     # aspect = viser_cam.aspect
-    #     width = int(self.resolution_slider.value)
-    #     height = int(width / self.aspect)
-    #     # fovx = fovy = viser_cam.fov
-    #     znear = self.near_plane_slider.value
-    #     zfar = self.far_plane_slider.value
-    #     world_view_transform = torch.tensor(get_w2c(viser_cam)).cuda()
-    #     # world_view_transform[:3, [1, 2]] *= -1
-    #     world_view_transform = world_view_transform.transpose(0, 1)
-    #     projection_matrix = getProjectionMatrix(znear=znear, zfar=zfar, fovX=fovx, fovY=fovy).transpose(0,1).cuda()
-    #     full_proj_transform = (world_view_transform.unsqueeze(0).bmm(projection_matrix.unsqueeze(0))).squeeze(0)
-    #     cam = MiniCam(width, height, fovx, fovy, znear, zfar, world_view_transform, full_proj_transform)
-    #     return cam
-        
-    #     # return Simple_Camera(0, R, T, fovx, fovy, height, width, "", 0)
+        # if out_key in ['heat_map', 'mask_image']:
+        #     return out_img
+        # else:
+        return out_img.cpu().moveaxis(0, -1).numpy().astype(np.uint8)
     
     @property
     def camera(self):

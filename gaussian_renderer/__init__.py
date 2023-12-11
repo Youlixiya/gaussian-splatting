@@ -141,7 +141,7 @@ def render(
         means3D=means3D.float(),
         means2D=means2D.float(),
         shs=shs,
-        features_precomp=pc._features,
+        colors_precomp=pc._features,
         opacities=opacity.float(),
         scales=scales.float(),
         rotations=rotations.float(),
