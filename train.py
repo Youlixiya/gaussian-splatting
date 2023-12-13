@@ -54,16 +54,22 @@ def training(args, dataset, opt, pipe, saving_iterations):
     iter_end = torch.cuda.Event(enable_timing = True)
 
     viewpoint_stack = None
-    loss_for_log = 0.0 
-    mask_dataset = MaskDataset(args.colmap_dir, scene.cameras.copy())
-    print(f'instance num: {len(mask_dataset.unique_colors)}')
+    loss_for_log = 0.0
+    downscale = '' if args.images == 'images' else args.images.split('_')[-1]
+    downscale = downscale if downscale == '' else f'_{downscale}'
+    mask_dataset = MaskDataset(args.colmap_dir, scene.cameras.copy(), mask_dir=f'masks{downscale}')
+    print(f'instance num: {len(mask_dataset.instance_colors)}')
+    print(f'sematic num: {len(mask_dataset.sematic_colors)}')
     # gaussians.set_mask_decoder(len(mask_dataset.unique_colors))
-    gaussians.set_instance_embedding(len(mask_dataset.unique_colors))
-    gaussians.set_instance_colors(mask_dataset.unique_colors)
+    gaussians.set_instance_embeddings(len(mask_dataset.instance_colors))
+    gaussians.set_sematic_embeddings(mask_dataset.clip_embeddings)
+    gaussians.set_sematic_compressor(len(mask_dataset.sematic_colors))
+    gaussians.set_instance_colors(mask_dataset.instance_colors, mask_dataset.sematic_colors)
     gaussians.feature_training_setup(opt)
+    feature_dim = gaussians.feature_dim
     # fuse_sematic_table_bar = tqdm(range(len(mask_dataset)), desc="Fuse Sematic table")
     progress_bar = tqdm(range(cur_iter, opt.feature_iterations), desc="Training Feature GS progress")
-    ce_loss_fn = nn.CrossEntropyLoss()
+    l1_loss_fn = nn.MSELoss()
     batch_size = 4096
     # scaler = GradScaler()
     # temperature = 100
@@ -76,15 +82,44 @@ def training(args, dataset, opt, pipe, saving_iterations):
         render_pkg = render(viewpoint_cam, gaussians, pipe, background, render_feature=True)
         render_feature = render_pkg['render_feature']
         h, w = render_feature.shape[1:]
-        masks = mask_dataset.mask_labels[index]
-        # contrastive loss
-        contrastive_matrix = (gaussians.instance_embedding @ gaussians.instance_embedding.T).softmax(-1)
-        gt_contrastive_labels = torch.arange(gaussians.instance_embedding.shape[0], device='cuda')
-        contrastive_loss = F.cross_entropy(contrastive_matrix, gt_contrastive_labels)
+        instance_masks = mask_dataset.instance_masks[index]
+        sematic_masks = mask_dataset.sematic_masks[index]
+        pixel_index = torch.randint(0, h * w, (batch_size, ))
+        # instance contrastive loss
+        instance_contrastive_matrix = (gaussians.instance_embeddings @ gaussians.instance_embeddings.T).softmax(-1)
+        gt_instance_contrastive_labels = torch.arange(gaussians.instance_embeddings.shape[0], device='cuda')
+        instance_contrastive_loss = F.cross_entropy(instance_contrastive_matrix, gt_instance_contrastive_labels)
+        # sematic contrastive loss
+        sematic_embedding_low_dim = gaussians.sematic_compressor(gaussians.sematic_embeddings.float() * gaussians.sematic_scale)
+        sematic_contrastive_matrix = (sematic_embedding_low_dim @ sematic_embedding_low_dim.T).softmax(-1)
+        gt_sematic_contrastive_labels = torch.arange(sematic_embedding_low_dim.shape[0], device='cuda')
+        sematic_contrastive_loss = F.cross_entropy(sematic_contrastive_matrix, gt_sematic_contrastive_labels)
+        
+        # render_feature_batch = render_feature.reshape(-1, h * w)[:, pixel_index].permute(1, 0)
+        
+        # sematic loss
+        sematic_masks_batch = sematic_masks.reshape(h * w)[pixel_index]
+        # sematic_render_feature = render_feature[:feature_dim, ...]
+        sematic_render_feature_batch = gaussians.sematic_decoder(render_feature.reshape(-1, h * w).permute(1, 0)[pixel_index])
+        # sematic_render_feature_batch = sematic_render_feature.reshape(-1, h * w)[:, pixel_index].permute(1, 0)
+        # sematic_loss = F.l1_loss(sematic_render_feature_batch, sematic_embedding_low_dim[sematic_masks_batch].detach())
+        pred_sematic_prob = (sematic_render_feature_batch @ sematic_embedding_low_dim.T).softmax(-1)
+        # pred_sematic_prob = (gaussians.sematic_decoder(render_feature_batch) @ sematic_embedding_low_dim.T).softmax(-1)
+        sematic_loss = F.cross_entropy(pred_sematic_prob, sematic_masks_batch)
         #instance loss
-        pred_instace_prob = ((gaussians.instance_embedding @ render_feature.reshape(-1, h * w)).T).softmax(-1)
-        instance_loss = F.cross_entropy(pred_instace_prob, masks.reshape(h * w))
-        loss = contrastive_loss + instance_loss
+        instance_masks_batch = instance_masks.reshape(h * w)[pixel_index]
+        instance_render_feature_batch = gaussians.instance_decoder(render_feature.reshape(-1, h * w).permute(1, 0)[pixel_index])
+        # instance_render_feature = render_feature[feature_dim:, ...]
+        # instance_render_feature_batch = instance_render_feature.reshape(-1, h * w)[:, pixel_index].permute(1, 0)
+        # instance_loss = F.l1_loss(instance_render_feature_batch, gaussians.instance_embeddings[instance_masks_batch].detach())
+        pred_instance_prob = (instance_render_feature_batch @ gaussians.instance_embeddings.T).softmax(-1)
+        # pred_instance_prob = (gaussians.instance_decoder(render_feature_batch) @ gaussians.instance_embedding.T).softmax(-1)
+        instance_loss = F.cross_entropy(pred_instance_prob, instance_masks_batch)
+        #norm loss
+        # norm_loss = torch.norm(gaussians.instance_embeddings, dim=-1).mean() + torch.norm(sematic_embedding_low_dim, dim=-1).mean()
+        
+        loss = instance_contrastive_loss + sematic_contrastive_loss + sematic_loss + instance_loss
+        
         # print(torch.sum(masks))
         # print(masks.shape)
         # print(torch.sum(masks[index].float()))
@@ -215,7 +250,8 @@ if __name__ == "__main__":
     op = OptimizationParams(parser)
     pp = PipelineParams(parser)
     # parser.add_argument("--test_iterations", nargs="+", type=int, default=[5_000])
-    parser.add_argument("--save_iterations", nargs="+", type=int, default=[1_000, 10_000])
+    # parser.add_argument("--save_iterations", nargs="+", type=int, default=[10_000, 20_000])
+    parser.add_argument("--save_iterations", nargs="+", type=int, default=[10_000, 20_000])
     # parser.add_argument("--quiet", action="store_true")
     # parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     # parser.add_argument("--start_checkpoint", type=str, default = None)

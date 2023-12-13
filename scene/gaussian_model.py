@@ -705,27 +705,44 @@ class GaussianFeatureModel(GaussianModel):
     def __init__(self,
                  sh_degree : int,
                  feature_dim=16,
+                 gs_feature_dim=16,
                 #  codebook_length=300,
-                #  embedding_dim=512,
+                 embedding_dim=512,
+                 sematic_scale=100,
                  hidden_dim=32,
                  layers=3,
                  device='cuda'):
         super().__init__(sh_degree)
         self.feature_dim = feature_dim
+        self.gs_feature_dim = gs_feature_dim
+        self.embedding_dim = embedding_dim
+        self.sematic_scale = sematic_scale
         self.hidden_dim = hidden_dim
         self.layers = layers
         self.device = device
+        self.sematic_decoder = nn.Linear(gs_feature_dim, feature_dim).to(device)
+        self.instance_decoder = nn.Linear(gs_feature_dim, feature_dim).to(device)
         # self.codebook = Codebook(codebook_length, embedding_dim)
         # self.sematic_table = SematicTable()
         # self.sematic_compressor = nn.Linear(embedding_dim, feature_dim).to(device)
         # self.sematic_decoder = MLP(feature_dim, hidden_dim, feature_dim, layers).to(device)
+        # self.instance_decoder = nn.Linear(gs_feature_dim, feature_dim).to(device)
+        # self.sematic_decoder = nn.Linear(gs_feature_dim, feature_dim).to(device)
         self.mask_decoder = None
         self.instance_colors = None
         # self.sematic_decoder = MLP(2 * feature_dim, hidden_dim, feature_dim, layers)
         # self.mask_decoder = MLP(2 * feature_dim, hidden_dim, 1, layers).to(device)
     
-    def set_instance_embedding(self, instance_num):
-        self.instance_embedding = nn.Parameter(torch.randn((instance_num, self.feature_dim), dtype=torch.float, device="cuda").requires_grad_(True))
+    def set_instance_embeddings(self, instance_num):
+        self.instance_num = instance_num
+        self.instance_embeddings = nn.Parameter(torch.randn((instance_num, self.feature_dim), dtype=torch.float, device=self.device).requires_grad_(True))
+    
+    def set_sematic_embeddings(self, sematic_embeddings):
+        self.sematic_embeddings = sematic_embeddings
+    
+    def set_sematic_compressor(self, sematic_num):
+        self.sematic_num = sematic_num
+        self.sematic_compressor = nn.Linear(self.embedding_dim, self.feature_dim).to(self.device)
     # def set_mask_decoder(self, instance_num):
     #     self.instance_num = instance_num
     #     # self.mask_decoder = MLP(self.feature_dim, instance_num, self.hidden_dim, self.layers).to(self.device)
@@ -733,8 +750,9 @@ class GaussianFeatureModel(GaussianModel):
     #     self.mask_decoder = nn.Linear(self.feature_dim, instance_num).to(self.device)
     #     # self.mask_decoder = nn.Linear(self.feature_dim, 1).to(self.device)
     
-    def set_instance_colors(self, instance_colors):
+    def set_instance_colors(self, instance_colors, sematic_colors):
         self.instance_colors = instance_colors
+        self.sematic_colors = sematic_colors
 
     def capture(self):
         return (
@@ -795,7 +813,7 @@ class GaussianFeatureModel(GaussianModel):
         self._features_dc = nn.Parameter(torch.tensor(features_dc, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
         self._features_rest = nn.Parameter(torch.tensor(features_extra, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
         # self._features = nn.Parameter(torch.randn((self._xyz.shape[0], self.feature_dim), dtype=torch.float, device="cuda").requires_grad_(True))
-        self._features = nn.Parameter(torch.randn((self._xyz.shape[0], self.feature_dim), dtype=torch.float, device="cuda").requires_grad_(True))
+        self._features = nn.Parameter(torch.randn((self._xyz.shape[0], self.gs_feature_dim), dtype=torch.float, device="cuda").requires_grad_(True))
         self._opacity = nn.Parameter(torch.tensor(opacities, dtype=torch.float, device="cuda").requires_grad_(True))
         self._scaling = nn.Parameter(torch.tensor(scales, dtype=torch.float, device="cuda").requires_grad_(True))
         self._rotation = nn.Parameter(torch.tensor(rots, dtype=torch.float, device="cuda").requires_grad_(True))
@@ -806,11 +824,18 @@ class GaussianFeatureModel(GaussianModel):
         mkdir_p(os.path.dirname(path))
         state = {
             'features': self._features.detach().cpu().numpy(),
-            'instance_embedding': self.instance_embedding.detach().cpu().numpy(),
+            # 'instance_decoder': self.instance_decoder.state_dict(),
+            # 'sematic_decoder': self.sematic_decoder.state_dict(),
+            'instance_embeddings': self.instance_embeddings.detach().cpu().numpy(),
             'instance_colors': self.instance_colors.cpu(),
+            'sematic_colors': self.sematic_colors.cpu(),
             'instance_num': self.instance_num,
+            'sematic_num': self.sematic_num,
+            'sematic_embeddings': self.sematic_embeddings,
             # 'sematic_table': self.sematic_table.table,
-            # 'sematic_compressor': self.sematic_compressor.state_dict(),
+            'sematic_compressor': self.sematic_compressor.state_dict(),
+            'sematic_decoder': self.sematic_decoder.state_dict(),
+            'instance_decoder': self.instance_decoder.state_dict(),
             # 'mask_decoder': self.mask_decoder.state_dict()
         }
         torch.save(state, os.path.join(path, f'feature_gs_{iter}.pt'))
@@ -818,11 +843,20 @@ class GaussianFeatureModel(GaussianModel):
     def load_feature_params(self, params_path):
         state = torch.load(params_path)
         self._features = nn.Parameter(torch.tensor(state['features'], dtype=torch.float, device="cuda").requires_grad_(False))
-        self.instance_embedding = nn.Parameter(torch.tensor(state['instance_embedding'], dtype=torch.float, device="cuda").requires_grad_(False))
+        self.instance_embeddings = nn.Parameter(torch.tensor(state['instance_embeddings'], dtype=torch.float, device="cuda").requires_grad_(False))
         self.instance_colors = state['instance_colors']
+        self.sematic_colors = state['sematic_colors']
+        self.instance_num = state['instance_num']
+        self.sematic_num = state['sematic_num']
+        self.sematic_embeddings = state['sematic_embeddings']
         # self.set_mask_decoder(state['instance_num'])
         # self.sematic_table.table = state['sematic_table']
-        # self.sematic_compressor.load_state_dict(state['sematic_compressor'])
+        self.set_sematic_compressor(self.sematic_num)
+        self.sematic_compressor.load_state_dict(state['sematic_compressor'])
+        self.sematic_decoder.load_state_dict(state['sematic_decoder'])
+        self.instance_decoder.load_state_dict(state['instance_decoder'])
+        # self.instance_decoder.load_state_dict(state['instance_decoder'])
+        # self.sematic_decoder.load_state_dict(state['instance_decoder'])
         # self.mask_decoder.load_state_dict(state['mask_decoder'])
         
         
@@ -831,8 +865,8 @@ class GaussianFeatureModel(GaussianModel):
 
         l = [
             {'params': [self._features], 'lr': training_args.extra_feature_lr, "name": "extra_features"},
-            {'params': [self.instance_embedding], 'lr': training_args.instance_embedding_lr, "name": "instance_embedding"},
-            # {'params': self.sematic_compressor.parameters(), 'lr': training_args.extra_feature_lr_init, "name": "sematic_compressor"},
+            {'params': [self.instance_embeddings], 'lr': training_args.instance_embedding_lr, "name": "instance_embedding"},
+            {'params': self.sematic_compressor.parameters(), 'lr': training_args.sematic_compressor_lr, "name": "sematic_compressor"},
             # {'params': self.mask_decoder.parameters(), 'lr': training_args.mask_decoder_lr, "name": "mask_decoder"},
         ]
 
