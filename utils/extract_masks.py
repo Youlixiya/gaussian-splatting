@@ -151,9 +151,9 @@ class MaskDataset(Dataset):
                  cameras,
                  mask_dir='masks_4',
                  clip_model_type='ViT-B/16',
-                #  clip_model_pretrained='clip_b16_grit+mim_fultune_4xe.pth',
                  clip_model_pretrained='mask_adapted_clip.pt',
-                 semantic_similarity=0.85,
+                #  clip_model_pretrained='clip_b16_grit+mim_fultune_4xe.pth',
+                #  semantic_similarity=0.85,
                  device='cuda'
                  ):
         self.source_root = source_root
@@ -162,13 +162,11 @@ class MaskDataset(Dataset):
         img_suffix = os.listdir(os.path.join(source_root, self.img_dir))[0].split('.')[-1]
         self.imgs_name = [f'{camera.image_name}.{img_suffix}' for camera in cameras]
         self.masks_path = os.path.join(source_root, f'{mask_dir}.npz')
-        self.semantic_similarity = semantic_similarity
+        # self.semantic_similarity = semantic_similarity
         if os.path.exists(self.masks_path):
             colors_masks = np.load(self.masks_path, allow_pickle=True)['arr_0'].tolist()
             self.instance_masks = colors_masks['instance_masks']
-            self.semantic_masks = colors_masks['semantic_masks']
             self.instance_colors = colors_masks['instance_colors']
-            self.semantic_colors = colors_masks['semantic_colors']
             self.clip_embeddings = colors_masks['clip_embeddings']
         else:
             self.masks_name = [img_name.split('.')[0] + '.png' for img_name in self.imgs_name]
@@ -203,9 +201,7 @@ class MaskDataset(Dataset):
             self.masks = None
             save_path = os.path.join(source_root, f'{mask_dir}.npz')
             np.savez_compressed(save_path, {'instance_masks': self.instance_masks,
-                                            'semantic_masks': self.semantic_masks,
                                             'instance_colors':self.instance_colors,
-                                            'semantic_colors':self.semantic_colors,
                                             'clip_embeddings':self.clip_embeddings})
             
         # print(torch.sum(self.mask_labels))
@@ -224,12 +220,12 @@ class MaskDataset(Dataset):
         for mask in tqdm(self.masks):
             self.instance_colors += torch.unique(mask.reshape(-1, 3), dim=0).tolist()
         self.instance_colors = torch.unique(torch.tensor(self.instance_colors, dtype=torch.uint8), dim=0)
-        self.semantic_colors = []
+        # self.semantic_colors = []
         
     @torch.no_grad()
     def asign_masks(self):
         n, h, w, c = self.masks.shape
-        self.semantic_masks = torch.zeros((n, h, w, 1), device=self.device)
+        # self.semantic_masks = torch.zeros((n, h, w, 1), device=self.device)
         self.instance_masks = torch.zeros((n, h, w, 1), device=self.device)
         self.clip_embeddings = []
         for i in trange(len(self.instance_colors)):
@@ -247,32 +243,18 @@ class MaskDataset(Dataset):
                     mask_embedding = self.get_clip_embedding(index.cpu().numpy().copy(), self.imgs[j].copy())
                     tmp_clip_embedding.append(mask_embedding)
             mask_embedding = torch.nn.functional.normalize(torch.stack(tmp_clip_embedding).mean(0), dim=-1)
-            if self.clip_embeddings == [] or len(self.clip_embeddings) == 1:
-                self.clip_embeddings.append(mask_embedding)
-                self.semantic_colors.append(self.instance_colors[i])
-                self.semantic_masks[indexs, :] = len(self.clip_embeddings) - 1
-            else:
-                semantic_similarity = torch.nn.functional.cosine_similarity(mask_embedding.unsqueeze(0), torch.stack(self.clip_embeddings[1:], 0))
-                max_similarity_index = torch.argmax(semantic_similarity, dim=-1)
-                # print(semantic_similarity)
-                # print(max_similarity_index)
-                if semantic_similarity[max_similarity_index] > self.semantic_similarity:
-                    self.semantic_masks[indexs, :] = max_similarity_index.item() + 1
-                else:
-                    self.clip_embeddings.append(mask_embedding)
-                    self.semantic_colors.append(self.instance_colors[i])
-                    self.semantic_masks[indexs, :] = len(self.clip_embeddings) - 1    
+            self.clip_embeddings.append(mask_embedding)
         
         self.instance_masks = self.instance_masks.long()
-        self.semantic_masks = self.semantic_masks.long()
-        self.semantic_colors = torch.stack(self.semantic_colors)
+        # self.semantic_masks = self.semantic_masks.long()
+        # self.semantic_colors = torch.stack(self.semantic_colors)
         self.clip_embeddings = torch.stack(self.clip_embeddings)
         
-        semantic_mask_rgb_save_path = os.path.join(self.source_root, self.mask_dir, 'SemanticMasks')
-        os.makedirs(semantic_mask_rgb_save_path, exist_ok=True)
-        for i in trange(len(self.semantic_masks)):
-            semantic_mask_rgb = Image.fromarray(self.semantic_colors[self.semantic_masks[i].cpu().reshape(h * w)].reshape(h, w, 3).numpy())
-            semantic_mask_rgb.save(os.path.join(semantic_mask_rgb_save_path, self.imgs_name[i]))
+        # semantic_mask_rgb_save_path = os.path.join(self.source_root, self.mask_dir, 'SemanticMasks')
+        # os.makedirs(semantic_mask_rgb_save_path, exist_ok=True)
+        # for i in trange(len(self.semantic_masks)):
+        #     semantic_mask_rgb = Image.fromarray(self.semantic_colors[self.semantic_masks[i].cpu().reshape(h * w)].reshape(h, w, 3).numpy())
+        #     semantic_mask_rgb.save(os.path.join(semantic_mask_rgb_save_path, self.imgs_name[i]))
     
     @torch.no_grad()
     def get_box_by_mask(self, mask):

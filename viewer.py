@@ -6,6 +6,7 @@ import torchvision
 import random
 import math
 import clip
+import alpha_clip
 import numpy as np
 from copy import deepcopy
 from PIL import Image
@@ -108,6 +109,9 @@ class ViserViewer:
             scene = CamScene(self.colmap_dir, h=-1, w=-1)
             self.cameras_extent = scene.cameras_extent
             self.colmap_cameras = scene.cameras
+            img_suffix = os.listdir(os.path.join(self.colmap_dir, 'images_4'))[0].split('.')[-1]
+            self.imgs_name = [f'{camera.image_name}.{img_suffix}' for camera in self.colmap_cameras]
+            self.imgs_path = [os.path.join(self.colmap_dir, 'images_4', img_name) for img_name in self.imgs_name]
         #     self.maskdataset = MaskDataset(self.colmap_dir, self.colmap_cameras)
         #     print(self.maskdataset[0])
 
@@ -126,9 +130,15 @@ class ViserViewer:
         self.clip_model, self.preprocess = clip.load(cfg.clip_model_type, mask_prompt_depth=3, device=self.device)
         clip_ckpt = torch.load(cfg.clip_model_pretrained)
         self.clip_model.load_state_dict(clip_ckpt)
+        # text_prompt = alpha_clip.tokenize([self.text_prompt.value]).to(self.device)
+        bg_features = self.clip_model.encode_text(clip.tokenize(['background']).to(self.device))
+        bg_features /= bg_features.norm(dim=-1, keepdim=True)
+        self.bg_features = bg_features
+        
+        # self.clip_model, self.preprocess = alpha_clip.load(cfg.clip_model_type, device=self.device, alpha_vision_ckpt_pth=cfg.clip_model_pretrained, lora_adapt=False, rank=-1)
+        
         os.makedirs('tmp', exist_ok=True)
         self.instance_feature_bg_color = torch.tensor([0] * self.gaussian.instance_feature_dim, dtype=torch.float32, device="cuda")
-        self.semantic_feature_bg_color = torch.tensor([0] * self.gaussian.semantic_feature_dim, dtype=torch.float32, device="cuda")
         # self.clip_model, self.preprocess = clip.load(cfg.clip_type, device=self.device)
         # self.text_segmentor = GroundMobileSAM(device=self.device)
         # self.text_segmentor = GroundSAM(device=self.device)
@@ -141,7 +151,8 @@ class ViserViewer:
             self.show_instance_map = self.server.add_gui_checkbox("Show Instance Map", initial_value=False)
             self.show_instance_mask = self.server.add_gui_checkbox("Show Instance Mask", initial_value=False)
             self.show_semantic_mask = self.server.add_gui_checkbox("Show semantic Mask", initial_value=False)
-            self.mask_threshold = self.server.add_gui_slider('Mask Threshold', min=0.5, max=1, step=0.1, initial_value=0.5)
+            self.mask_threshold = self.server.add_gui_slider('Mask Threshold', min=0, max=1, step=0.1, initial_value=0.5)
+            self.text_query_threshold = self.server.add_gui_slider('Text Query Threshold', min=0, max=1, step=0.1, initial_value=0.5)
             self.clear_instance_embedding = self.server.add_gui_button("Clear Instance Embedding")
         with self.server.add_gui_folder("Render Setting"):
             self.reset_view_button = self.server.add_gui_button("Reset View")
@@ -230,6 +241,10 @@ class ViserViewer:
         def _(_):
             self.need_update = True
         
+        @self.text_query_threshold.on_update
+        def _(_):
+            self.need_update = True
+        
         @self.clear_instance_embedding.on_click
         def _(_):
             self.instance_feature = None
@@ -291,6 +306,7 @@ class ViserViewer:
         
         with torch.no_grad():
             self.frames = []
+            self.frustums = []
             random.seed(0)
             frame_index = random.sample(
                 range(0, len(self.colmap_cameras)),
@@ -310,23 +326,45 @@ class ViserViewer:
         def _(pointer):
             self.click_cb(pointer)
             self.need_update=True
-        
+    
     @torch.no_grad()
     def get_semantic_map(self, render_feature): 
         h, w = render_feature.shape[1:]
         text_prompt = clip.tokenize([self.text_prompt.value]).to(self.device)
+        # text_prompt = alpha_clip.tokenize([self.text_prompt.value]).to(self.device)
         text_features = self.clip_model.encode_text(text_prompt)
         text_features /= text_features.norm(dim=-1, keepdim=True)
-        similarity = (text_features @ self.gaussian.clip_embeddings.T).softmax(dim=-1)
-        max_index = torch.argmax(similarity)
-        query_embedding = self.gaussian.semantic_embeddings[max_index].unsqueeze(0)
+        query_features = torch.cat([self.bg_features, text_features])
+        similarity = (10 * self.gaussian.clip_embeddings @ query_features.T).softmax(dim=-1)[:, 1]
+        # print(similarity)
+        valid_index = similarity > self.text_query_threshold.value
+        query_embedding = self.gaussian.instance_embeddings[valid_index, :]
+        # print(query_embedding.shape)
         # query_embedding_low_dim = self.gaussian.semantic_compressor(self.gaussian.semantic_scale * query_embedding.unsqueeze(0).float())
-        similarity_map = F.cosine_similarity(query_embedding, render_feature.reshape(-1, h*w).permute(1, 0)).reshape(-1, h, w).permute(1, 2, 0)
-        semantic_map = apply_colormap(similarity_map, ColormapOptions(colormap="turbo", normalize=True, colormap_min=0, colormap_max=1))
+        similarity_map = (F.normalize(render_feature.reshape(-1, h * w), dim=0).permute(1, 0) @ F.normalize(query_embedding, dim=1).T).reshape(h, w, -1)
+        # semantic_map = apply_colormap(similarity_map, ColormapOptions(colormap="turbo", normalize=True, colormap_min=0, colormap_max=1))
         # semantic_map = (semantic_map - semantic_map.min()) / (semantic_map.max() - semantic_map.min())
         # semantic_map = (semantic_map - np.min(semantic_map)) / (np.max(semantic_map) - np.min(semantic_map))
         # print(semantic_map)
-        return similarity_map, semantic_map, self.gaussian.semantic_colors[max_index].to(self.device)
+        return similarity_map
+    
+    # @torch.no_grad()
+    # def get_semantic_map(self, render_feature): 
+    #     h, w = render_feature.shape[1:]
+    #     text_prompt = clip.tokenize([self.text_prompt.value]).to(self.device)
+    #     # text_prompt = alpha_clip.tokenize([self.text_prompt.value]).to(self.device)
+    #     text_features = self.clip_model.encode_text(text_prompt)
+    #     text_features /= text_features.norm(dim=-1, keepdim=True)
+    #     similarity = (text_features @ self.gaussian.clip_embeddings.T).softmax(dim=-1)
+    #     max_index = torch.argmax(similarity)
+    #     query_embedding = self.gaussian.instance_embeddings[max_index].unsqueeze(0)
+    #     # query_embedding_low_dim = self.gaussian.semantic_compressor(self.gaussian.semantic_scale * query_embedding.unsqueeze(0).float())
+    #     similarity_map = F.cosine_similarity(query_embedding, render_feature.reshape(-1, h*w).permute(1, 0)).reshape(-1, h, w).permute(1, 2, 0)
+    #     semantic_map = apply_colormap(similarity_map, ColormapOptions(colormap="turbo", normalize=True, colormap_min=0, colormap_max=1))
+    #     # semantic_map = (semantic_map - semantic_map.min()) / (semantic_map.max() - semantic_map.min())
+    #     # semantic_map = (semantic_map - np.min(semantic_map)) / (np.max(semantic_map) - np.min(semantic_map))
+    #     # print(semantic_map)
+    #     return similarity_map, semantic_map, self.gaussian.instance_colors[max_index].to(self.device)
     
     @torch.no_grad()
     def get_instance_mask(self, render_feature):
@@ -349,6 +387,8 @@ class ViserViewer:
     
     def make_one_camera_pose_frame(self, idx):
         cam = self.colmap_cameras[idx]
+        # image = cv2.cvtColor(cv2.imread(self.imgs_path[idx]), cv2.COLOR_BGR2RGB)
+        # H, W = image.shape[:2]
         # wxyz = tf.SO3.from_matrix(cam.R.T).wxyz
         # position = -cam.R.T @ cam.T
 
@@ -367,7 +407,16 @@ class ViserViewer:
             axes_radius=0.01,
             visible=False,
         )
+        # frustum = self.server.add_camera_frustum(
+        #     f"/colmap/frame_{idx}/frustum",
+        #     fov=cam.FoVy,
+        #     aspect=W / H,
+        #     scale=0.15,
+        #     image=image, # 0-255 uint8 H W C
+        #     visible=False,
+        # )
         self.frames.append(frame)
+        # self.frustums.append(frustum)
 
         @frame.on_click
         def _(event: viser.GuiEvent):
@@ -420,6 +469,16 @@ class ViserViewer:
                 client.camera.look_at = frame.position
 
             self.begin_call = begin_trans
+        # def attach_callback(
+        #     frustum: viser.CameraFrustumHandle, frame: viser.FrameHandle
+        # ) -> None:
+        #     @frustum.on_click
+        #     def _(_) -> None:
+        #         for client in self.server.get_clients().values():
+        #             client.camera.wxyz = frame.wxyz
+        #             client.camera.position = frame.position
+
+        # attach_callback(frustum, frame)
     
     def get_kwargs(self):
         out = {}
@@ -513,7 +572,7 @@ class ViserViewer:
         semantic_rendered_feature = None
         if self.show_instance_map or self.show_instance_map or self.show_instance_mask or self.show_semantic_mask:
             # render_feature = render(cam, self.gaussian, self.pipe, self.background_tensor, render_feature=True)['render_feature']
-            rendered_feature = render(cam, self.gaussian, self.pipe, self.instance_feature_bg_color, render_feature=True, override_feature=self.gaussian.gs_features)['render_feature']
+            rendered_feature = render(cam, self.gaussian, self.pipe, self.instance_feature_bg_color, render_feature=True, override_feature=self.gaussian.instance_features)['render_feature']
             render_pkg['rendered_feature'] = apply_colormap(rendered_feature.permute(1, 2, 0), ColormapOptions(colormap="pca"))[None]
             Image.fromarray((render_pkg['rendered_feature'][0].cpu().numpy() * 255).astype(np.uint8)).save('tmp/rendered_feature.jpg')
             h, w = rendered_feature.shape[1:]
@@ -522,30 +581,50 @@ class ViserViewer:
         if self.show_semantic_map.value and self.text_prompt.value:
             # if semantic_rendered_feature is None:
             #     semantic_rendered_feature = render(cam, self.gaussian, self.pipe, self.semantic_feature_bg_color, render_feature=True, override_feature=self.gaussian.semantic_features)['render_feature']
-            similarity_map, semantic_heat_map, semantic_color = self.get_semantic_map(rendered_feature[self.gaussian.semantic_feature_dim:, ...])
-            mask = (similarity_map > self.mask_threshold.value)[..., 0]
+            similarity_map = self.get_semantic_map(rendered_feature)
+            print(similarity_map)
+            mask = (similarity_map > self.mask_threshold.value).any(-1)
             semantic_mask_map = image.clone()[0]
             sematic_object_map = image.clone()[0]
             # semantic_rgb_map[mask, :] = semantic_map[mask, :]
             # semantic_rgb_map[mask, :] = semantic_rgb_map[mask, :] * 0.5 + (semantic_color / 255) * 0.5
             semantic_mask_map[mask, :] = semantic_mask_map[mask, :] * 0.5 + torch.tensor([1, 0, 0], dtype=torch.float32, device=self.device) * 0.5
             sematic_object_map[~mask, :] = torch.tensor([1, 1, 1], dtype=torch.float32, device=self.device)
-            render_pkg['semantic_heat_map'] = semantic_heat_map[None]
             render_pkg['semantic_mask_map'] = semantic_mask_map[None]
             render_pkg['sematic_object_map'] = sematic_object_map[None]
-            Image.fromarray((render_pkg['semantic_heat_map'][0].cpu().numpy() * 255).astype(np.uint8)).save('tmp/semantic_heat_map.jpg')
+            # Image.fromarray((render_pkg['semantic_heat_map'][0].cpu().numpy() * 255).astype(np.uint8)).save('tmp/semantic_heat_map.jpg')
             Image.fromarray((render_pkg['semantic_mask_map'][0].cpu().numpy() * 255).astype(np.uint8)).save('tmp/semantic_mask_map.jpg')
             Image.fromarray((render_pkg['sematic_object_map'][0].cpu().numpy() * 255).astype(np.uint8)).save('tmp/sematic_object_map.jpg')
+        
+        
+        
+        # if self.show_semantic_map.value and self.text_prompt.value:
+        #     # if semantic_rendered_feature is None:
+        #     #     semantic_rendered_feature = render(cam, self.gaussian, self.pipe, self.semantic_feature_bg_color, render_feature=True, override_feature=self.gaussian.semantic_features)['render_feature']
+        #     similarity_map, semantic_heat_map, semantic_color = self.get_semantic_map(rendered_feature)
+        #     mask = (similarity_map > self.mask_threshold.value)[..., 0]
+        #     semantic_mask_map = image.clone()[0]
+        #     sematic_object_map = image.clone()[0]
+        #     # semantic_rgb_map[mask, :] = semantic_map[mask, :]
+        #     # semantic_rgb_map[mask, :] = semantic_rgb_map[mask, :] * 0.5 + (semantic_color / 255) * 0.5
+        #     semantic_mask_map[mask, :] = semantic_mask_map[mask, :] * 0.5 + torch.tensor([1, 0, 0], dtype=torch.float32, device=self.device) * 0.5
+        #     sematic_object_map[~mask, :] = torch.tensor([1, 1, 1], dtype=torch.float32, device=self.device)
+        #     render_pkg['semantic_heat_map'] = semantic_heat_map[None]
+        #     render_pkg['semantic_mask_map'] = semantic_mask_map[None]
+        #     render_pkg['sematic_object_map'] = sematic_object_map[None]
+        #     Image.fromarray((render_pkg['semantic_heat_map'][0].cpu().numpy() * 255).astype(np.uint8)).save('tmp/semantic_heat_map.jpg')
+        #     Image.fromarray((render_pkg['semantic_mask_map'][0].cpu().numpy() * 255).astype(np.uint8)).save('tmp/semantic_mask_map.jpg')
+        #     Image.fromarray((render_pkg['sematic_object_map'][0].cpu().numpy() * 255).astype(np.uint8)).save('tmp/sematic_object_map.jpg')
         
         if self.show_instance_map.value:
             if self.point_pos is not None:
                 if self.instance_feature is None:
-                    instance_feature = rendered_feature[:self.gaussian.instance_feature_dim, (self.point_pos[1] * h).long(), (self.point_pos[0] * w).long()][None]
+                    instance_feature = rendered_feature[:, (self.point_pos[1] * h).long(), (self.point_pos[0] * w).long()][None]
                     instance_embedding_index = torch.argmax((instance_feature @ self.gaussian.instance_embeddings.T).softmax(-1))
                     self.instance_feature = self.gaussian.instance_embeddings[instance_embedding_index]
                 # print(self.point_pos)
                 # print(self.render_feature)
-                similarity_map = F.cosine_similarity(rendered_feature[:self.gaussian.instance_feature_dim, ...].reshape(-1, h*w).permute(1, 0), self.instance_feature.unsqueeze(0)).reshape(h, w, 1)
+                similarity_map = F.cosine_similarity(rendered_feature.reshape(-1, h*w).permute(1, 0), self.instance_feature.unsqueeze(0)).reshape(h, w, 1)
                 instance_map = apply_colormap(similarity_map, ColormapOptions(colormap="turbo", normalize=True, colormap_min=-1, colormap_max=1))
                 mask = (similarity_map > self.mask_threshold.value)[..., 0]
                 instance_mask_map = image.clone()[0]
@@ -732,7 +811,12 @@ class ViserViewer:
     def prepare_output_image(self, output):
         out_key = self.renderer_output.value
         if out_key in output.keys():
-            out_img = output[out_key][0]  # H W C
+            out_img = output[out_key]  # H W C
+            if out_img is None:
+                out_img = output['comp_rgb'][0]
+            else:
+                out_img = out_img[0]
+            
         else:
             out_img = output['comp_rgb'][0]
         # if out_key == "comp_rgb":
@@ -882,6 +966,7 @@ if __name__ == '__main__':
     parser.add_argument("--colmap_dir", type=str, required=True)  #
     parser.add_argument("--clip_model_type", type=str, default='ViT-B/16')  # gs ply or obj file?
     parser.add_argument("--clip_model_pretrained", type=str, default='mask_adapted_clip.pt')
+    # parser.add_argument("--clip_model_pretrained", type=str, default='clip_b16_grit+mim_fultune_4xe.pth')
     args = parser.parse_args()
     viewer = ViserViewer(args)
     while(True):
