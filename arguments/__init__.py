@@ -82,9 +82,13 @@ class OptimizationParams(ParamGroup):
         self.rotation_lr = 0.001
         self.percent_dense = 0.01
         self.lambda_dssim = 0.2
-        self.extra_feature_lr = 0.001
+        self.gs_features_lr = 0.001
+        self.semantic_features_lr = 0.001
+        self.instance_features_lr = 0.001
         self.instance_embedding_lr = 0.001
-        self.sematic_compressor_lr = 0.001
+        self.semantic_embedding_lr = 0.001
+        self.semantic_decoder_lr = 0.001
+        self.semantic_compressor_lr = 0.001
         # self.mask_decoder_lr = 0.0005
         self.mask_decoder_lr = 0.001
         # self.extra_feature_lr_init = 0.0001

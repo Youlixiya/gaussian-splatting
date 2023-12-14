@@ -50,7 +50,8 @@ def render(
     bg_color: torch.Tensor,
     scaling_modifier=1.0,
     override_color=None,
-    render_feature=False
+    render_feature=False,
+    override_feature=None
 ):
     """
     Render the scene.
@@ -75,7 +76,7 @@ def render(
     tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
     if render_feature:
         bg_color = torch.tensor(
-            [0] * pc.feature_dim, dtype=torch.float32, device="cuda"
+            [0] * override_feature.shape[-1], dtype=torch.float32, device="cuda"
         )
         Rasterizer = GaussianFeatureRasterizer
     else:
@@ -141,7 +142,7 @@ def render(
         means3D=means3D.float(),
         means2D=means2D.float(),
         shs=shs,
-        colors_precomp=pc._features,
+        colors_precomp=override_feature,
         opacities=opacity.float(),
         scales=scales.float(),
         rotations=rotations.float(),

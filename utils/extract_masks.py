@@ -2,6 +2,7 @@ import os
 from typing import Any
 import cv2
 import clip
+import alpha_clip
 import torch
 import math
 import numpy as np
@@ -12,6 +13,7 @@ from sklearn.decomposition import PCA
 import torchvision.transforms as T
 from segment_anything import sam_model_registry, SamAutomaticMaskGenerator, SamPredictor
 from torch.utils.data import Dataset
+from torchvision import transforms
 
 IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
@@ -149,8 +151,9 @@ class MaskDataset(Dataset):
                  cameras,
                  mask_dir='masks_4',
                  clip_model_type='ViT-B/16',
+                #  clip_model_pretrained='clip_b16_grit+mim_fultune_4xe.pth',
                  clip_model_pretrained='mask_adapted_clip.pt',
-                 sematic_similarity=0.9,
+                 semantic_similarity=0.85,
                  device='cuda'
                  ):
         self.source_root = source_root
@@ -159,13 +162,13 @@ class MaskDataset(Dataset):
         img_suffix = os.listdir(os.path.join(source_root, self.img_dir))[0].split('.')[-1]
         self.imgs_name = [f'{camera.image_name}.{img_suffix}' for camera in cameras]
         self.masks_path = os.path.join(source_root, f'{mask_dir}.npz')
-        self.sematic_similarity = sematic_similarity
+        self.semantic_similarity = semantic_similarity
         if os.path.exists(self.masks_path):
             colors_masks = np.load(self.masks_path, allow_pickle=True)['arr_0'].tolist()
             self.instance_masks = colors_masks['instance_masks']
-            self.sematic_masks = colors_masks['sematic_masks']
+            self.semantic_masks = colors_masks['semantic_masks']
             self.instance_colors = colors_masks['instance_colors']
-            self.sematic_colors = colors_masks['sematic_colors']
+            self.semantic_colors = colors_masks['semantic_colors']
             self.clip_embeddings = colors_masks['clip_embeddings']
         else:
             self.masks_name = [img_name.split('.')[0] + '.png' for img_name in self.imgs_name]
@@ -175,6 +178,14 @@ class MaskDataset(Dataset):
             self.masks = torch.from_numpy(np.stack([cv2.cvtColor(cv2.imread(mask_path), cv2.COLOR_BGR2RGB) for mask_path in self.masks_path], axis=0)).to(device)
             self.imgs = np.stack([cv2.cvtColor(cv2.imread(img_path), cv2.COLOR_BGR2RGB) for img_path in self.imgs_path], axis=0)
             self.device = device
+            # self.clip_model, self.preprocess = alpha_clip.load(clip_model_type, device=device, alpha_vision_ckpt_pth=clip_model_pretrained, lora_adapt=False, rank=-1)
+            # self.mask_transform = transforms.Compose([
+            #     transforms.ToTensor(), 
+            #     transforms.Resize((224, 224)),
+            #     transforms.Normalize(0.5, 0.26)
+            # ])
+            
+                
             self.clip_model, self.preprocess = clip.load(clip_model_type, mask_prompt_depth=3, device=device)
             clip_ckpt = torch.load(clip_model_pretrained)
             self.clip_model.load_state_dict(clip_ckpt)
@@ -183,7 +194,7 @@ class MaskDataset(Dataset):
             #     pretrained=clip_model_pretrained,  # e.g., laion2b_s34b_b88k
             #     precision="fp16",
             # )
-            # self.clip_model = self.clip_model.to(device)
+            self.clip_model = self.clip_model.to(device)
             # self.tokenizer = open_clip.get_tokenizer(clip_model_type)
             # self.clip_model, self.preprocess = clip.load(clip_type, device=device)
             self.set_colors()
@@ -192,9 +203,9 @@ class MaskDataset(Dataset):
             self.masks = None
             save_path = os.path.join(source_root, f'{mask_dir}.npz')
             np.savez_compressed(save_path, {'instance_masks': self.instance_masks,
-                                            'sematic_masks': self.sematic_masks,
+                                            'semantic_masks': self.semantic_masks,
                                             'instance_colors':self.instance_colors,
-                                            'sematic_colors':self.sematic_colors,
+                                            'semantic_colors':self.semantic_colors,
                                             'clip_embeddings':self.clip_embeddings})
             
         # print(torch.sum(self.mask_labels))
@@ -213,12 +224,12 @@ class MaskDataset(Dataset):
         for mask in tqdm(self.masks):
             self.instance_colors += torch.unique(mask.reshape(-1, 3), dim=0).tolist()
         self.instance_colors = torch.unique(torch.tensor(self.instance_colors, dtype=torch.uint8), dim=0)
-        self.sematic_colors = []
+        self.semantic_colors = []
         
     @torch.no_grad()
     def asign_masks(self):
         n, h, w, c = self.masks.shape
-        self.sematic_masks = torch.zeros((n, h, w, 1), device=self.device)
+        self.semantic_masks = torch.zeros((n, h, w, 1), device=self.device)
         self.instance_masks = torch.zeros((n, h, w, 1), device=self.device)
         self.clip_embeddings = []
         for i in trange(len(self.instance_colors)):
@@ -230,36 +241,38 @@ class MaskDataset(Dataset):
             # print(torch.sum(index.float()))
             # index = (self.masks.reshape(n * h * w, -1) == self.unique_colors[i].to(self.device)).reshape(n, h, w)
             self.instance_masks[indexs, :] = i
+            tmp_clip_embedding = []
             for j, index in enumerate(indexs):
                 if torch.sum(index) > 0:
-                    mask_embedding = self.get_clip_embedding(index, self.imgs[j])
-                    if self.clip_embeddings == []:
-                        self.clip_embeddings.append(mask_embedding)
-                        self.sematic_colors.append(self.instance_colors[i])
-                        self.sematic_masks[indexs, :] = len(self.clip_embeddings) - 1
-                    else:
-                        sematic_similarity = torch.nn.functional.cosine_similarity(mask_embedding.unsqueeze(0), torch.stack(self.clip_embeddings, 0))
-                        max_similarity_index = torch.argmax(sematic_similarity, dim=-1)
-                        # print(sematic_similarity)
-                        # print(max_similarity_index)
-                        if sematic_similarity[max_similarity_index] > self.sematic_similarity:
-                            self.sematic_masks[indexs, :] = max_similarity_index.item()
-                        else:
-                            self.clip_embeddings.append(mask_embedding)
-                            self.sematic_colors.append(self.instance_colors[i])
-                            self.sematic_masks[indexs, :] = len(self.clip_embeddings) - 1
-                    break
+                    mask_embedding = self.get_clip_embedding(index.cpu().numpy().copy(), self.imgs[j].copy())
+                    tmp_clip_embedding.append(mask_embedding)
+            mask_embedding = torch.nn.functional.normalize(torch.stack(tmp_clip_embedding).mean(0), dim=-1)
+            if self.clip_embeddings == [] or len(self.clip_embeddings) == 1:
+                self.clip_embeddings.append(mask_embedding)
+                self.semantic_colors.append(self.instance_colors[i])
+                self.semantic_masks[indexs, :] = len(self.clip_embeddings) - 1
+            else:
+                semantic_similarity = torch.nn.functional.cosine_similarity(mask_embedding.unsqueeze(0), torch.stack(self.clip_embeddings[1:], 0))
+                max_similarity_index = torch.argmax(semantic_similarity, dim=-1)
+                # print(semantic_similarity)
+                # print(max_similarity_index)
+                if semantic_similarity[max_similarity_index] > self.semantic_similarity:
+                    self.semantic_masks[indexs, :] = max_similarity_index.item() + 1
+                else:
+                    self.clip_embeddings.append(mask_embedding)
+                    self.semantic_colors.append(self.instance_colors[i])
+                    self.semantic_masks[indexs, :] = len(self.clip_embeddings) - 1    
         
         self.instance_masks = self.instance_masks.long()
-        self.sematic_masks = self.sematic_masks.long()
-        self.sematic_colors = torch.stack(self.sematic_colors)
+        self.semantic_masks = self.semantic_masks.long()
+        self.semantic_colors = torch.stack(self.semantic_colors)
         self.clip_embeddings = torch.stack(self.clip_embeddings)
         
-        sematic_mask_rgb_save_path = os.path.join(self.source_root, self.mask_dir, 'SematicMasks')
-        os.makedirs(sematic_mask_rgb_save_path, exist_ok=True)
-        for i in trange(len(self.sematic_masks)):
-            sematic_mask_rgb = Image.fromarray(self.sematic_colors[self.sematic_masks[i].cpu().reshape(h * w)].reshape(h, w, 3).numpy())
-            sematic_mask_rgb.save(os.path.join(sematic_mask_rgb_save_path, self.imgs_name[i]))
+        semantic_mask_rgb_save_path = os.path.join(self.source_root, self.mask_dir, 'SemanticMasks')
+        os.makedirs(semantic_mask_rgb_save_path, exist_ok=True)
+        for i in trange(len(self.semantic_masks)):
+            semantic_mask_rgb = Image.fromarray(self.semantic_colors[self.semantic_masks[i].cpu().reshape(h * w)].reshape(h, w, 3).numpy())
+            semantic_mask_rgb.save(os.path.join(semantic_mask_rgb_save_path, self.imgs_name[i]))
     
     @torch.no_grad()
     def get_box_by_mask(self, mask):
@@ -269,6 +282,21 @@ class MaskDataset(Dataset):
         top_left = min_indices
         bottom_right = max_indices + 1
         return top_left[1].item(), top_left[0].item(), bottom_right[1].item(), bottom_right[0].item()
+    
+    # @torch.no_grad()
+    # def get_clip_embedding(self, mask, img):
+    #     img_tensor = self.preprocess(Image.fromarray(img)).half().to(self.device)
+    #     mask_tensor = self.mask_transform((mask * 255).astype(np.uint8))[None].half().to(self.device)
+    #     mask_image_feature = self.clip_model.visual(img_tensor, mask_tensor).squeeze(0)
+    #     # mask_image_feature = mask_image_feature / mask_image_feature.norm(dim=-1, keepdim=True)
+    #     mask_image_feature = torch.nn.functional.normalize(mask_image_feature, dim=-1)
+    #     # x1, y1, x2, y2 = self.get_box_by_mask(mask)
+    #     # img[~mask.cpu().numpy(), :] = np.uint8([255, 255, 255])
+    #     # img_patch = Image.fromarray(img[y1:y2, x1:x2, :])
+    #     # img_patch_tensor = self.preprocess(img_patch).unsqueeze(0).cuda().half()
+    #     # img_patch_feature = self.clip_model.encode_image(img_patch_tensor).squeeze(0)
+    #     # img_patch_feature = torch.nn.functional.normalize(img_patch_feature, dim=-1)
+    #     return mask_image_feature
     
     @torch.no_grad()
     def get_clip_embedding(self, mask, img):

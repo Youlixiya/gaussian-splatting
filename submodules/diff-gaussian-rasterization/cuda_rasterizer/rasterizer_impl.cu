@@ -342,10 +342,10 @@ int CudaRasterizer::Rasterizer::featureforward(
   char *img_chunkptr = imageBuffer(img_chunk_size);
   ImageState imgState = ImageState::fromChunk(img_chunkptr, width * height);
 
-  if (FEATURE_NUM_CHANNELS != 16 && colors_precomp == nullptr) {
-    throw std::runtime_error(
-        "For non-RGB, provide precomputed Gaussian colors!");
-  }
+  // if (FEATURE_NUM_CHANNELS != 16 && colors_precomp == nullptr) {
+  //   throw std::runtime_error(
+  //       "For non-RGB, provide precomputed Gaussian colors!");
+  // }
 
   // Run preprocessing per-Gaussian (transformation, bounding, conversion of SHs
   // to RGB)

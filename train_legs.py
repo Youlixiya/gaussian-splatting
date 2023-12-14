@@ -58,7 +58,7 @@ def training(args, dataset, opt, pipe, saving_iterations):
     viewpoint_stack = None
     loss_for_log = 0.0 
     mask_dataset = MaskDataset(args.colmap_dir, scene.cameras.copy())
-    fuse_sematic_table_bar = tqdm(range(len(mask_dataset)), desc="Fuse Sematic table")
+    fuse_semantic_table_bar = tqdm(range(len(mask_dataset)), desc="Fuse semantic table")
     progress_bar = tqdm(range(cur_iter, opt.feature_iterations), desc="Training Feature GS progress")
     with torch.no_grad():
         for i in range(len(mask_dataset)):
@@ -67,29 +67,29 @@ def training(args, dataset, opt, pipe, saving_iterations):
             for j in range(len(masks_embeddings)):
                 mask_embedding = masks_embeddings[j]
                 embedding = mask_embedding['clip_embedding'].cuda()
-                if gaussians.sematic_table.is_empty():
-                        gaussians.sematic_table.append(embedding)
-                        # target_index = len(gaussians.sematic_table) - 1
+                if gaussians.semantic_table.is_empty():
+                        gaussians.semantic_table.append(embedding)
+                        # target_index = len(gaussians.semantic_table) - 1
                 else:
-                    query_cosine_similarities = gaussians.sematic_table.get_cosine_similarities(embedding)
+                    query_cosine_similarities = gaussians.semantic_table.get_cosine_similarities(embedding)
                     max_index = torch.argmax(query_cosine_similarities)
                     max_cosine_similaritie = query_cosine_similarities[max_index]
                     if max_cosine_similaritie > 0.9:
                         # print(max_cosine_similaritie)
                         # print(max_index)
-                        # print(gaussians.sematic_table.table[max_index].shape)
-                        new_embedding = F.normalize((max_cosine_similaritie * gaussians.sematic_table.table[max_index] + (1 - max_cosine_similaritie) * embedding).unsqueeze(0)).squeeze(0)
-                        # new_embedding = max_cosine_similaritie * gaussians.sematic_table.table[max_index] + (1 - max_cosine_similaritie) * embedding
+                        # print(gaussians.semantic_table.table[max_index].shape)
+                        new_embedding = F.normalize((max_cosine_similaritie * gaussians.semantic_table.table[max_index] + (1 - max_cosine_similaritie) * embedding).unsqueeze(0)).squeeze(0)
+                        # new_embedding = max_cosine_similaritie * gaussians.semantic_table.table[max_index] + (1 - max_cosine_similaritie) * embedding
                         # print(new_embedding.shape)
-                        gaussians.sematic_table.table[max_index] = new_embedding
+                        gaussians.semantic_table.table[max_index] = new_embedding
                         embedding = new_embedding
                         # target_index = max_index
                     else:
-                        gaussians.sematic_table.append(embedding)
-                        # target_index = len(gaussians.sematic_table) - 1
+                        gaussians.semantic_table.append(embedding)
+                        # target_index = len(gaussians.semantic_table) - 1
             
-            fuse_sematic_table_bar.set_postfix({"Sematic_table_len": len(gaussians.sematic_table)})
-            fuse_sematic_table_bar.update(1)
+            fuse_semantic_table_bar.set_postfix({"semantic_table_len": len(gaussians.semantic_table)})
+            fuse_semantic_table_bar.update(1)
     # bce_loss_func = nn.BCELoss()
     mse_loss_func = nn.MSELoss()
     scaler = GradScaler()
@@ -104,17 +104,17 @@ def training(args, dataset, opt, pipe, saving_iterations):
         # h, w = render_feature.shape[1:]
         # masks = torch.tensor(np.stack([mask_embedding['mask'] for mask_embedding in masks_embeddings]), dtype=torch.bool, device='cuda')
         # embeddings = torch.stack([mask_embedding['clip_embedding'].cuda() for mask_embedding in masks_embeddings])
-        # sematic_embeddings = torch.stack(gaussians.sematic_table.table)
-        # sematic_index = torch.argmax(embeddings @ sematic_embeddings.T, dim=-1)
-        # unique_sematic_index = torch.unique(sematic_index)
+        # semantic_embeddings = torch.stack(gaussians.semantic_table.table)
+        # semantic_index = torch.argmax(embeddings @ semantic_embeddings.T, dim=-1)
+        # unique_semantic_index = torch.unique(semantic_index)
         # unique_mask = []
-        # for index in unique_sematic_index:
-        #     unique_mask.append(masks[sematic_index == index, ...].sum(0).to(torch.bool))
+        # for index in unique_semantic_index:
+        #     unique_mask.append(masks[semantic_index == index, ...].sum(0).to(torch.bool))
             
             
         # total_loss = torch.empty(0).cuda()
         for i in range(len(masks_embeddings)):
-        # for i in range(len(unique_sematic_index)):
+        # for i in range(len(unique_semantic_index)):
             cur_iter += 1
             iter_start.record()
             # gaussians.update_learning_rate(cur_iter)
@@ -126,61 +126,61 @@ def training(args, dataset, opt, pipe, saving_iterations):
             h, w = render_feature.shape[1:]
             # mask = unique_mask[i]
             # print(mask.shape)
-            query_cosine_similarities = gaussians.sematic_table.get_cosine_similarities(embedding)
+            query_cosine_similarities = gaussians.semantic_table.get_cosine_similarities(embedding)
             target_index = torch.argmax(query_cosine_similarities)
             # max_cosine_similaritie = query_cosine_similarities[max_index]
-            # if gaussians.sematic_table.is_empty():
-            #     gaussians.sematic_table.append(embedding)
-            #     target_index = len(gaussians.sematic_table) - 1
+            # if gaussians.semantic_table.is_empty():
+            #     gaussians.semantic_table.append(embedding)
+            #     target_index = len(gaussians.semantic_table) - 1
             # else:
-            #     query_cosine_similarities = gaussians.sematic_table.get_cosine_similarities(embedding)
+            #     query_cosine_similarities = gaussians.semantic_table.get_cosine_similarities(embedding)
             #     max_index = torch.argmax(query_cosine_similarities)
             #     max_cosine_similaritie = query_cosine_similarities[max_index]
             #     if max_cosine_similaritie > 0.90:
             #         # print(max_cosine_similaritie)
             #         # print(max_index)
-            #         # print(gaussians.sematic_table.table[max_index].shape)
-            #         new_embedding = F.normalize((max_cosine_similaritie * gaussians.sematic_table.table[max_index] + (1 - max_cosine_similaritie) * embedding).unsqueeze(0)).squeeze(0)
-            #         # new_embedding = max_cosine_similaritie * gaussians.sematic_table.table[max_index] + (1 - max_cosine_similaritie) * embedding
+            #         # print(gaussians.semantic_table.table[max_index].shape)
+            #         new_embedding = F.normalize((max_cosine_similaritie * gaussians.semantic_table.table[max_index] + (1 - max_cosine_similaritie) * embedding).unsqueeze(0)).squeeze(0)
+            #         # new_embedding = max_cosine_similaritie * gaussians.semantic_table.table[max_index] + (1 - max_cosine_similaritie) * embedding
             #         # print(new_embedding.shape)
-            #         gaussians.sematic_table.table[max_index] = new_embedding
+            #         gaussians.semantic_table.table[max_index] = new_embedding
             #         embedding = new_embedding
             #         target_index = max_index
             #     else:
-            #         gaussians.sematic_table.append(embedding)
-            #         target_index = len(gaussians.sematic_table) - 1
+            #         gaussians.semantic_table.append(embedding)
+            #         target_index = len(gaussians.semantic_table) - 1
             with autocast():
-                sematic_embeddings = torch.stack(gaussians.sematic_table.table, dim=0)
+                semantic_embeddings = torch.stack(gaussians.semantic_table.table, dim=0)
                 # with torch.no_grad():
-                #     gt_similarity_matrix = (temperature * sematic_embeddings @ sematic_embeddings.T).softmax(-1)
+                #     gt_similarity_matrix = (temperature * semantic_embeddings @ semantic_embeddings.T).softmax(-1)
                     # print(gt_similarity_matrix)
-                embeddings_low_dim = gaussians.sematic_compressor(sematic_embeddings)
-                gt_sematics = torch.arange(embeddings_low_dim.shape[0], device='cuda')                
+                embeddings_low_dim = gaussians.semantic_compressor(semantic_embeddings)
+                gt_semantics = torch.arange(embeddings_low_dim.shape[0], device='cuda')                
                 low_dim_similarity_matrix = (embeddings_low_dim @ embeddings_low_dim.T / temperature).softmax(-1)
                 # contrastive_loss = mse_loss_func(low_dim_similarity_matrix, gt_similarity_matrix)
-                contrastive_loss = F.cross_entropy(low_dim_similarity_matrix, gt_sematics)
+                contrastive_loss = F.cross_entropy(low_dim_similarity_matrix, gt_semantics)
                 target_embedding_low_dim = embeddings_low_dim[target_index]
                 # target_embedding_low_dim = embeddings_low_dim[i]
                 # pred_mask = gaussians.mask_decoder(render_feature.unsqueeze(0) * target_embedding_low_dim[None, :, None, None])[0, 0, ...]
                 # bce_loss = F.binary_cross_entropy_with_logits(pred_mask, mask.float())
-                # pred_pos_sematic = render_feature[:, mask]
-                # pred_neg_sematic = render_feature[:, ~mask]
-                pred_pos_sematic = render_feature[:, mask]
-                # pred_neg_sematic = render_feature[:, ~mask]
-                pos_cosine_similarities = get_cosine_similarities(pred_pos_sematic.permute(1, 0), target_embedding_low_dim.detach())
-                # neg_cosine_similarities = get_cosine_similarities(pred_neg_sematic.permute(1, 0), target_embedding_low_dim.detach())
+                # pred_pos_semantic = render_feature[:, mask]
+                # pred_neg_semantic = render_feature[:, ~mask]
+                pred_pos_semantic = render_feature[:, mask]
+                # pred_neg_semantic = render_feature[:, ~mask]
+                pos_cosine_similarities = get_cosine_similarities(pred_pos_semantic.permute(1, 0), target_embedding_low_dim.detach())
+                # neg_cosine_similarities = get_cosine_similarities(pred_neg_semantic.permute(1, 0), target_embedding_low_dim.detach())
                 gt_pos_cosine_similarities = torch.ones_like(pos_cosine_similarities, device='cuda')
                 cosine_similarities_loss = mse_loss_func(pos_cosine_similarities, gt_pos_cosine_similarities)
                 # cosine_similarities_loss = mse_loss_func(pos_cosine_similarities, gt_pos_cosine_similarities) + neg_cosine_similarities.mean()
-                # pred_pos_sematic = render_feature[:, mask].permute(1, 0)
-                # sematic_loss = torch.norm(pred_pos_sematic - target_embedding_low_dim.detach(), dim=-1).mean()
-                # norm_loss = (torch.ones((pred_pos_sematic.shape[0],), device='cuda') - torch.norm(pred_pos_sematic, dim=-1)).mean()
-                # pred_neg_sematic = render_feature[:, ~mask]
-                # valid_sematic_shape = pred_valid_sematic.shape
-                # cosine_similarities = get_cosine_similarities(pred_valid_sematic.permute(1, 0), target_embedding_low_dim.detach())
+                # pred_pos_semantic = render_feature[:, mask].permute(1, 0)
+                # semantic_loss = torch.norm(pred_pos_semantic - target_embedding_low_dim.detach(), dim=-1).mean()
+                # norm_loss = (torch.ones((pred_pos_semantic.shape[0],), device='cuda') - torch.norm(pred_pos_semantic, dim=-1)).mean()
+                # pred_neg_semantic = render_feature[:, ~mask]
+                # valid_semantic_shape = pred_valid_semantic.shape
+                # cosine_similarities = get_cosine_similarities(pred_valid_semantic.permute(1, 0), target_embedding_low_dim.detach())
                 # gt_cosine_similarities = torch.ones_like(cosine_similarities, device='cuda')
                 # cosine_similarities_loss = mse_loss_func(cosine_similarities, gt_cosine_similarities)
-                # embedding_low_dim = gaussians.sematic_compressor(embedding.unsqueeze(0)).squeeze(0)
+                # embedding_low_dim = gaussians.semantic_compressor(embedding.unsqueeze(0)).squeeze(0)
                 # print(render_feature.shape)
                 # print(embedding_low_dim[None, :, None, None].shape)
                 # embedding_low_dim_map = torch.stack(h * w * [embedding_low_dim], dim=-1).reshape(1, -1, h, w)
@@ -188,13 +188,13 @@ def training(args, dataset, opt, pipe, saving_iterations):
                 # mask_decoder_input = torch.cat([render_feature.unsqueeze(0), embedding_low_dim_map], dim=1)
                 # pred_mask = torch.sigmoid(gaussians.mask_decoder(mask_decoder_input).squeeze(0))
                 # pred_mask = torch.sigmoid(gaussians.mask_decoder(render_feature.unsqueeze(0) + embedding_low_dim[None, :, None, None]).squeeze(0))
-                # pred_sematic = render_feature + gaussians.sematic_decoder(render_feature.unsqueeze(0) + embedding_low_dim[None, :, None, None]).squeeze(0)
-                # cosine_similarities_map = get_cosine_similarities(pred_sematic.reshape(-1, h * w).permute(1, 0), embedding_low_dim).reshape(h, w, 1).permute(2, 0, 1)
+                # pred_semantic = render_feature + gaussians.semantic_decoder(render_feature.unsqueeze(0) + embedding_low_dim[None, :, None, None]).squeeze(0)
+                # cosine_similarities_map = get_cosine_similarities(pred_semantic.reshape(-1, h * w).permute(1, 0), embedding_low_dim).reshape(h, w, 1).permute(2, 0, 1)
                 # pos_cosine_similarities_map = cosine_similarities_map[mask]
                 # neg_cosine_similarities_map = cosine_similarities_map[~mask]
                 # pred_pos_mask = pred_mask[mask]
                 # pred_neg_mask = pred_mask[~mask]
-                # pred_pose_sematic = pred_sematic[mask.squeeze(0)]
+                # pred_pose_semantic = pred_semantic[mask.squeeze(0)]
                 # pos_mask = torch.ones_like(pos_cosine_similarities_map, device='cuda')
                 # pos_mask = torch.ones_like(pred_pos_mask, device='cuda')
                 # neg_mask = torch.zeros_like(neg_cosine_similarities_map, device='cuda')
@@ -215,10 +215,10 @@ def training(args, dataset, opt, pipe, saving_iterations):
                 # adaptive_bce_loss= (bce_loss(pos_mask.reshape(-1), pred_pos_mask.reshape(-1))).mean() 
                                 #    (neg_cosine_similarities_map.reshape(-1) * bce_loss(neg_mask.reshape(-1), pred_neg_mask.reshape(-1))).mean()
                 # feature_dim = gaussians.feature_dim
-                # norm_loss = 1 - torch.norm(embedding_low_dim) + (pos_mask.reshape(-1) - torch.norm(pred_pose_sematic.reshape(feature_dim, -1), dim=-1).reshape(-1)).mean()
+                # norm_loss = 1 - torch.norm(embedding_low_dim) + (pos_mask.reshape(-1) - torch.norm(pred_pose_semantic.reshape(feature_dim, -1), dim=-1).reshape(-1)).mean()
                 # loss = cosine_similarities_loss + adaptive_bce_loss + norm_loss
                 # loss = contrastive_loss + cosine_similarities_loss
-                # total_loss = total_loss + contrastive_loss + sematic_loss + norm_loss
+                # total_loss = total_loss + contrastive_loss + semantic_loss + norm_loss
                 loss = contrastive_loss + cosine_similarities_loss
                 # loss = contrastive_loss + bce_loss
                 # loss = cosine_similarities_loss
@@ -234,7 +234,7 @@ def training(args, dataset, opt, pipe, saving_iterations):
                 loss_for_log = loss.item()
                 # loss_for_log = total_loss.item()
                 # if iteration % 10 == 0:
-                progress_bar.set_postfix({"Loss": f"{loss_for_log:.{7}f}", "Sematic_table_len": len(gaussians.sematic_table)})
+                progress_bar.set_postfix({"Loss": f"{loss_for_log:.{7}f}", "semantic_table_len": len(gaussians.semantic_table)})
                 progress_bar.update(1)
                 if cur_iter + 1 == opt.feature_iterations:
                     progress_bar.close()

@@ -10,7 +10,7 @@ class Codebook(nn.Module):
     def forward(self, x):
         return self.embedding_layer(x)
 
-class SematicTable(nn.Module):
+class semanticTable(nn.Module):
     def __init__(self) -> None:
         super().__init__()
         self.table = []
