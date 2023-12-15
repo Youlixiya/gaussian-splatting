@@ -153,11 +153,12 @@ class MaskDataset(Dataset):
                  clip_model_type='ViT-B/16',
                  clip_model_pretrained='mask_adapted_clip.pt',
                 #  clip_model_pretrained='clip_b16_grit+mim_fultune_4xe.pth',
-                #  semantic_similarity=0.85,
+                 semantic_similarity=0.95,
                  device='cuda'
                  ):
         self.source_root = source_root
         self.mask_dir = mask_dir
+        self.semantic_similarity = semantic_similarity
         self.img_dir = mask_dir.replace('masks', 'images')
         img_suffix = os.listdir(os.path.join(source_root, self.img_dir))[0].split('.')[-1]
         self.imgs_name = [f'{camera.image_name}.{img_suffix}' for camera in cameras]
@@ -237,13 +238,20 @@ class MaskDataset(Dataset):
             # print(torch.sum(index.float()))
             # index = (self.masks.reshape(n * h * w, -1) == self.unique_colors[i].to(self.device)).reshape(n, h, w)
             self.instance_masks[indexs, :] = i
-            tmp_clip_embedding = []
+            tmp_clip_embedding = None
             for j, index in enumerate(indexs):
                 if torch.sum(index) > 0:
                     mask_embedding = self.get_clip_embedding(index.cpu().numpy().copy(), self.imgs[j].copy())
-                    tmp_clip_embedding.append(mask_embedding)
-            mask_embedding = torch.nn.functional.normalize(torch.stack(tmp_clip_embedding).mean(0), dim=-1)
-            self.clip_embeddings.append(mask_embedding)
+                    if tmp_clip_embedding is None:
+                        tmp_clip_embedding = mask_embedding
+                    else:
+                        semantic_similarity = torch.nn.functional.cosine_similarity(mask_embedding[None], tmp_clip_embedding)
+                        if semantic_similarity >= self.semantic_similarity:
+                            tmp_clip_embedding = torch.nn.functional.normalize(tmp_clip_embedding + mask_embedding, dim=-1)
+                    # tmp_clip_embedding.append(mask_embedding)
+            # mask_embedding = torch.nn.functional.normalize(torch.stack(tmp_clip_embedding).mean(0), dim=-1)
+            # self.clip_embeddings.append(mask_embedding)
+            self.clip_embeddings.append(tmp_clip_embedding)
         
         self.instance_masks = self.instance_masks.long()
         # self.semantic_masks = self.semantic_masks.long()

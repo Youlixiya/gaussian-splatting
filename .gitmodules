@@ -4,6 +4,6 @@
 [submodule "Tracking-Anything-with-DEVA"]
 	path = Tracking-Anything-with-DEVA
 	url = https://github.com/hkchengrex/Tracking-Anything-with-DEVA.git
-[submodule "Tracking-Anything-with-DEVA"]
+[submodule "AlphaCLIP"]
 	path = AlphaCLIP
 	url = https://github.com/SunzeY/AlphaCLIP.git
