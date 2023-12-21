@@ -14,7 +14,7 @@ from tqdm import tqdm
 from .model import build_model
 from .simple_tokenizer import SimpleTokenizer as _Tokenizer
 from .masks import BitMasks
-from .utils import expand_box, crop_with_mask
+from .utils import expand_box, mask2box, crop_with_mask
 
 try:
     from torchvision.transforms import InterpolationMode
@@ -127,8 +127,9 @@ def _preprocess(image: torch.Tensor,
     # valid = bin_mask.sum(dim=(-1, -2)) > 0
     # bin_mask = bin_mask[valid]
     # mask = mask[valid]
-    bin_mask = BitMasks(mask)
-    bboxes = bin_mask.get_bounding_boxes()
+    # bin_mask = BitMasks(mask)
+    # bboxes = bin_mask.get_bounding_boxes()
+    # bboxes = mask2box
     # crop,mask
     regions = []
     region_masks = []
@@ -140,7 +141,9 @@ def _preprocess(image: torch.Tensor,
         raise NotImplementedError(
             "Unknown mask_fill method: {}".format(mask_fill)
         )
-    for bbox, single_mask in zip(bboxes, mask):
+    
+    for single_mask in mask:
+        bbox = mask2box(single_mask)
         region, region_mask = crop_with_mask(
             image.type(dtype),
             single_mask.type(dtype),
@@ -150,8 +153,7 @@ def _preprocess(image: torch.Tensor,
         )
         regions.append(region.unsqueeze(0))
         region_masks.append(region_mask.unsqueeze(0))
-    # if len(regions) == 0:
-    #     return None, valid
+    
     unnorm_regions = regions
     if normalize:
         regions = [(r - pixel_mean ) / pixel_std for r in regions]

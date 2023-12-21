@@ -51,7 +51,8 @@ def render(
     scaling_modifier=1.0,
     override_color=None,
     render_feature=False,
-    override_feature=None
+    override_feature=None,
+    device='cuda:0'
 ):
     """
     Render the scene.
@@ -62,7 +63,7 @@ def render(
     # Create zero tensor. We will use it to make pytorch return gradients of the 2D (screen-space) means
     screenspace_points = (
         torch.zeros_like(
-            pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device="cuda"
+            pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device=device
         )
         + 0
     )
@@ -75,9 +76,9 @@ def render(
     tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
     tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
     if render_feature:
-        bg_color = torch.tensor(
-            [0] * override_feature.shape[-1], dtype=torch.float32, device="cuda"
-        )
+        # bg_color = torch.tensor(
+        #     [0] * override_feature.shape[-1], dtype=torch.float32, device="cuda"
+        # )
         Rasterizer = GaussianFeatureRasterizer
     else:
         Rasterizer = GaussianRasterizer

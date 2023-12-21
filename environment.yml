@@ -14,6 +14,7 @@ dependencies:
   - open_clip_torch
   - viser
   - tqdm
+  - google-generativeai
   - pip:
     - submodules/diff-gaussian-rasterization
     - submodules/simple-knn

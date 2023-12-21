@@ -27,17 +27,25 @@ def expand_box(
     return [int(b) for b in box]
 
 
+# def mask2box(mask: torch.Tensor):
+#     # use naive way
+#     row = torch.nonzero(mask.sum(dim=0))[:, 0]
+#     if len(row) == 0:
+#         return None
+#     x1 = row.min()
+#     x2 = row.max()
+#     col = np.nonzero(mask.sum(dim=1))[:, 0]
+#     y1 = col.min()
+#     y2 = col.max()
+#     return x1, y1, x2 + 1, y2 + 1
+
 def mask2box(mask: torch.Tensor):
-    # use naive way
-    row = torch.nonzero(mask.sum(dim=0))[:, 0]
-    if len(row) == 0:
-        return None
-    x1 = row.min()
-    x2 = row.max()
-    col = np.nonzero(mask.sum(dim=1))[:, 0]
-    y1 = col.min()
-    y2 = col.max()
-    return x1, y1, x2 + 1, y2 + 1
+    nonzero_indices = torch.nonzero(mask.float())
+    x1, y1, x2, y2 = nonzero_indices[:, 1].min(), nonzero_indices[:, 0].min(), \
+             nonzero_indices[:, 1].max() + 1, \
+             nonzero_indices[:, 0].max() + 1
+    # print(nonzero_indices[:, 1].min(), nonzero_indices[:, 0].min(), nonzero_indices[:, 1].max(), nonzero_indices[:, 0].max())
+    return x1, y1, x2, y2
 
 
 def crop_with_mask(
@@ -47,12 +55,17 @@ def crop_with_mask(
     fill: Tuple[float, float, float] = (0, 0, 0),
     expand_ratio: float = 1.0,
 ):
-    l, t, r, b = expand_box(*bbox, expand_ratio)
+    # l, t, r, b = expand_box(*bbox, expand_ratio)
+    l, t, r, b = bbox
     _, h, w = image.shape
     l = max(l, 0)
     t = max(t, 0)
     r = min(r, w)
     b = min(b, h)
+    # if b < t:
+    #     b = min(t + 1, h)
+    # if r < l:
+    #     r = min(l + 1, h)
     new_image = torch.cat(
         [image.new_full((1, b - t, r - l), fill_value=val) for val in fill]
     )

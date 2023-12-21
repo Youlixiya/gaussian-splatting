@@ -573,18 +573,164 @@ class GaussianModel:
 
         return mesh
 
+# class GaussianFeatureModel(GaussianModel):
+#     def __init__(self,
+#                  sh_degree : int,
+#                  instance_feature_dim=16,
+#                  rgb_decode=False,
+#                  depth_decode=False,
+#                  device='cuda:0'):
+#         super().__init__(sh_degree)
+#         self.instance_feature_dim = instance_feature_dim
+#         self.rgb_decode = rgb_decode
+#         self.depth_decode = depth_decode
+#         self.total_feature_dim = instance_feature_dim
+#         if rgb_decode:
+#             self.total_feature_dim = self.total_feature_dim + 3
+#         if depth_decode:
+#             self.total_feature_dim = self.total_feature_dim + 1
+#         self.device = device
+        
+#     def set_instance_embeddings(self, instance_num):
+#         self.instance_num = instance_num
+#         self.instance_embeddings = nn.Parameter(torch.randn((instance_num, self.total_feature_dim), dtype=torch.float, device=self.device).requires_grad_(True))
+    
+#     def set_clip_embeddings(self, clip_embeddings):
+#         self.clip_embeddings = clip_embeddings
+    
+#     def set_instance_colors(self, instance_colors):
+#         self.instance_colors = instance_colors
+
+#     def capture(self):
+#         return (
+#             self.active_sh_degree,
+#             self._xyz,
+#             self._features_dc,
+#             self._features_rest,
+#             self._scaling,
+#             self._rotation,
+#             self._opacity,
+#             self.instance_features,
+#             self.max_radii2D,
+#             self.xyz_gradient_accum,
+#             self.denom,
+#             self.optimizer.state_dict(),
+#             self.spatial_lr_scale,
+#         )
+    
+#     @property
+#     def get_instance_features(self):
+#         return self.instance_features
+
+#     def load_ply(self, path):
+#         plydata = PlyData.read(path)
+
+#         xyz = np.stack((np.asarray(plydata.elements[0]["x"]),
+#                         np.asarray(plydata.elements[0]["y"]),
+#                         np.asarray(plydata.elements[0]["z"])),  axis=1)
+#         opacities = np.asarray(plydata.elements[0]["opacity"])[..., np.newaxis]
+
+#         features_dc = np.zeros((xyz.shape[0], 3, 1))
+#         features_dc[:, 0, 0] = np.asarray(plydata.elements[0]["f_dc_0"])
+#         features_dc[:, 1, 0] = np.asarray(plydata.elements[0]["f_dc_1"])
+#         features_dc[:, 2, 0] = np.asarray(plydata.elements[0]["f_dc_2"])
+
+#         extra_f_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("f_rest_")]
+#         extra_f_names = sorted(extra_f_names, key = lambda x: int(x.split('_')[-1]))
+#         assert len(extra_f_names)==3*(self.max_sh_degree + 1) ** 2 - 3
+#         features_extra = np.zeros((xyz.shape[0], len(extra_f_names)))
+#         for idx, attr_name in enumerate(extra_f_names):
+#             features_extra[:, idx] = np.asarray(plydata.elements[0][attr_name])
+#         # Reshape (P,F*SH_coeffs) to (P, F, SH_coeffs except DC)
+#         features_extra = features_extra.reshape((features_extra.shape[0], 3, (self.max_sh_degree + 1) ** 2 - 1))
+
+#         scale_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("scale_")]
+#         scale_names = sorted(scale_names, key = lambda x: int(x.split('_')[-1]))
+#         scales = np.zeros((xyz.shape[0], len(scale_names)))
+#         for idx, attr_name in enumerate(scale_names):
+#             scales[:, idx] = np.asarray(plydata.elements[0][attr_name])
+
+#         rot_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("rot")]
+#         rot_names = sorted(rot_names, key = lambda x: int(x.split('_')[-1]))
+#         rots = np.zeros((xyz.shape[0], len(rot_names)))
+#         for idx, attr_name in enumerate(rot_names):
+#             rots[:, idx] = np.asarray(plydata.elements[0][attr_name])
+
+#         self._xyz = nn.Parameter(torch.tensor(xyz, dtype=torch.float, device=self.device).requires_grad_(False))
+#         self._features_dc = nn.Parameter(torch.tensor(features_dc, dtype=torch.float, device=self.device).transpose(1, 2).contiguous().requires_grad_(False))
+#         self._features_rest = nn.Parameter(torch.tensor(features_extra, dtype=torch.float, device=self.device).transpose(1, 2).contiguous().requires_grad_(False))
+#         self.instance_features =  nn.Parameter(torch.randn((self._xyz.shape[0], self.instance_feature_dim), dtype=torch.float, device=self.device).requires_grad_(True))
+#         self._opacity = nn.Parameter(torch.tensor(opacities, dtype=torch.float, device=self.device).requires_grad_(False))
+#         self._scaling = nn.Parameter(torch.tensor(scales, dtype=torch.float, device=self.device).requires_grad_(False))
+#         self._rotation = nn.Parameter(torch.tensor(rots, dtype=torch.float, device=self.device).requires_grad_(False))
+
+#         self.active_sh_degree = self.max_sh_degree
+    
+#     def save_feature_params(self, path, iter):
+#         mkdir_p(os.path.dirname(path))
+#         state = {
+#             'instance_features': self.instance_features.detach().cpu().numpy(),
+#             'instance_embeddings': self.instance_embeddings.detach().cpu().numpy(),
+#             'clip_embeddings': self.clip_embeddings,
+#             'instance_colors': self.instance_colors.cpu(),
+#             'instance_num': self.instance_num,
+#             'rgb_decode': self.rgb_decode,
+#             'depth_decode': self.depth_decode
+            
+#             # 'semantic_compressor': self.semantic_compressor.state_dict(),
+#         }
+#         rgb_decode = 'rgb_' if self.rgb_decode else ''
+#         depth_decode = 'depth_' if self.depth_decode else ''
+#         save_path = os.path.join(path, f'feature_gs_{rgb_decode}{depth_decode}{iter}.pt')
+#         torch.save(state, save_path)
+    
+#     def load_feature_params(self, params_path):
+#         state = torch.load(params_path)
+#         self.instance_features = nn.Parameter(torch.tensor(state['instance_features'], dtype=torch.float, device=self.device).requires_grad_(False))
+#         self.instance_embeddings = nn.Parameter(torch.tensor(state['instance_embeddings'], dtype=torch.float, device=self.device).requires_grad_(False))
+#         self.instance_embeddings = F.normalize(self.instance_embeddings, dim=-1)
+#         self.instance_colors = state['instance_colors']
+#         self.instance_num = state['instance_num']
+#         self.clip_embeddings = state['clip_embeddings']
+#         self.rgb_decode = state['rgb_decode']
+#         self.depth_decode = state['depth_decode']
+        
+    
+#     def feature_training_setup(self, training_args):
+
+#         l = [
+#             {'params': [self.instance_features], 'lr': training_args.instance_features_lr, "name": "instance_features"},
+#             {'params': [self.instance_embeddings], 'lr': training_args.instance_embedding_lr, "name": "instance_embedding"},
+#         ]
+
+#         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
+
+
 class GaussianFeatureModel(GaussianModel):
     def __init__(self,
                  sh_degree : int,
                  instance_feature_dim=16,
-                 device='cuda'):
+                 rgb_decode=False,
+                 depth_decode=False,
+                 device='cuda:0'):
         super().__init__(sh_degree)
         self.instance_feature_dim = instance_feature_dim
+        self.rgb_decode = rgb_decode
+        self.depth_decode = depth_decode
+        self.total_feature_dim = instance_feature_dim
+        if rgb_decode:
+            self.total_feature_dim = self.total_feature_dim + 3
+        if depth_decode:
+            self.total_feature_dim = self.total_feature_dim + 1
+        if rgb_decode or depth_decode:
+            self.feature_aggregator = MLP(self.total_feature_dim, self.instance_feature_dim, self.instance_feature_dim, 2).to(device)
+        else:
+            self.feature_aggregator = None
         self.device = device
-    
+        
     def set_instance_embeddings(self, instance_num):
         self.instance_num = instance_num
-        self.instance_embeddings = nn.Parameter(torch.randn((instance_num, self.instance_feature_dim), dtype=torch.float, device=self.device).requires_grad_(True))
+        self.instance_embeddings = torch.zeros((instance_num, self.instance_feature_dim), dtype=torch.float, device=self.device).requires_grad_(False)
     
     def set_clip_embeddings(self, clip_embeddings):
         self.clip_embeddings = clip_embeddings
@@ -647,43 +793,55 @@ class GaussianFeatureModel(GaussianModel):
         for idx, attr_name in enumerate(rot_names):
             rots[:, idx] = np.asarray(plydata.elements[0][attr_name])
 
-        self._xyz = nn.Parameter(torch.tensor(xyz, dtype=torch.float, device="cuda").requires_grad_(True))
-        self._features_dc = nn.Parameter(torch.tensor(features_dc, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
-        self._features_rest = nn.Parameter(torch.tensor(features_extra, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
-        self.instance_features =  nn.Parameter(torch.randn((self._xyz.shape[0], self.instance_feature_dim), dtype=torch.float, device="cuda").requires_grad_(True))
-        self._opacity = nn.Parameter(torch.tensor(opacities, dtype=torch.float, device="cuda").requires_grad_(True))
-        self._scaling = nn.Parameter(torch.tensor(scales, dtype=torch.float, device="cuda").requires_grad_(True))
-        self._rotation = nn.Parameter(torch.tensor(rots, dtype=torch.float, device="cuda").requires_grad_(True))
+        self._xyz = nn.Parameter(torch.tensor(xyz, dtype=torch.float, device=self.device).requires_grad_(False))
+        self._features_dc = nn.Parameter(torch.tensor(features_dc, dtype=torch.float, device=self.device).transpose(1, 2).contiguous().requires_grad_(False))
+        self._features_rest = nn.Parameter(torch.tensor(features_extra, dtype=torch.float, device=self.device).transpose(1, 2).contiguous().requires_grad_(False))
+        self.instance_features =  nn.Parameter(torch.randn((self._xyz.shape[0], self.instance_feature_dim), dtype=torch.float, device=self.device).requires_grad_(True))
+        self._opacity = nn.Parameter(torch.tensor(opacities, dtype=torch.float, device=self.device).requires_grad_(False))
+        self._scaling = nn.Parameter(torch.tensor(scales, dtype=torch.float, device=self.device).requires_grad_(False))
+        self._rotation = nn.Parameter(torch.tensor(rots, dtype=torch.float, device=self.device).requires_grad_(False))
 
         self.active_sh_degree = self.max_sh_degree
     
-    def save_feature_params(self, path, iter):
+    def save_feature_params(self, path, iter, extra=''):
         mkdir_p(os.path.dirname(path))
+        feature_aggregator_ckpt = self.feature_aggregator.state_dict() if self.feature_aggregator else None
         state = {
             'instance_features': self.instance_features.detach().cpu().numpy(),
             'instance_embeddings': self.instance_embeddings.detach().cpu().numpy(),
+            'feature_aggregator': feature_aggregator_ckpt,
             'clip_embeddings': self.clip_embeddings,
             'instance_colors': self.instance_colors.cpu(),
             'instance_num': self.instance_num,
+            'rgb_decode': self.rgb_decode,
+            'depth_decode': self.depth_decode
             
             # 'semantic_compressor': self.semantic_compressor.state_dict(),
         }
-        torch.save(state, os.path.join(path, f'feature_gs_{iter}.pt'))
+        rgb_decode = 'rgb_' if self.rgb_decode else ''
+        depth_decode = 'depth_' if self.depth_decode else ''
+        save_path = os.path.join(path, f'{extra}_feature_gs_{rgb_decode}{depth_decode}{iter}.pt')
+        torch.save(state, save_path)
     
     def load_feature_params(self, params_path):
         state = torch.load(params_path)
-        self.instance_features = nn.Parameter(torch.tensor(state['instance_features'], dtype=torch.float, device="cuda").requires_grad_(False))
-        self.instance_embeddings = nn.Parameter(torch.tensor(state['instance_embeddings'], dtype=torch.float, device="cuda").requires_grad_(False))
+        self.instance_features = nn.Parameter(torch.tensor(state['instance_features'], dtype=torch.float, device=self.device).requires_grad_(False))
+        self.instance_embeddings = nn.Parameter(torch.tensor(state['instance_embeddings'], dtype=torch.float, device=self.device).requires_grad_(False))
+        self.instance_embeddings = F.normalize(self.instance_embeddings, dim=-1)
         self.instance_colors = state['instance_colors']
         self.instance_num = state['instance_num']
         self.clip_embeddings = state['clip_embeddings']
+        self.rgb_decode = state['rgb_decode']
+        self.depth_decode = state['depth_decode']
+        if state['feature_aggregator']:
+            self.feature_aggregator.load_state_dict(state['feature_aggregator'])
         
     
     def feature_training_setup(self, training_args):
 
         l = [
             {'params': [self.instance_features], 'lr': training_args.instance_features_lr, "name": "instance_features"},
-            {'params': [self.instance_embeddings], 'lr': training_args.instance_embedding_lr, "name": "instance_embedding"},
+            # {'params': [self.instance_embeddings], 'lr': training_args.instance_embedding_lr, "name": "instance_embedding"},
         ]
 
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
