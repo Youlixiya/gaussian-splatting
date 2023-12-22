@@ -7,7 +7,7 @@
         "image_name": "IMG_4027.JPG",
         "save_path": "output/llff/global_contrastive_masks/fern",
         "mask_save_name": "IMG_4027_mask.png",
-        "mask_threshold": 0.90,
+        "mask_threshold": 0.80,
         "points": [[525, 525]]
     },
     "flower":{
@@ -40,7 +40,7 @@
         "image_name": "DJI_20200223_163024_597.jpg",
         "save_path": "output/llff/global_contrastive_masks/horns_center",
         "mask_save_name": "DJI_20200223_163024_597_mask.png",
-        "mask_threshold": 0.8,
+        "mask_threshold": 0.7,
         "points": [[310, 512]]
     },
     "horns_left":{
@@ -51,7 +51,7 @@
         "image_name": "DJI_20200223_163024_597.jpg",
         "save_path": "output/llff/global_contrastive_masks/horns_left",
         "mask_save_name": "DJI_20200223_163024_597_mask.png",
-        "mask_threshold": 0.80,
+        "mask_threshold": 0.8,
         "points": [[386, 145]]
     },
     "leaves":{
@@ -62,7 +62,7 @@
         "image_name": "IMG_2997.JPG",
         "save_path": "output/llff/global_contrastive_masks/leaves",
         "mask_save_name": "IMG_2997_mask.png",
-        "mask_threshold": 0.90,
+        "mask_threshold": 0.95,
         "points": [[562, 709]]
     },
     "orchids":{

@@ -15,7 +15,7 @@ from utils.camera_utils import cameraList_load
 
 
 class CamScene:
-    def __init__(self, source_path, h=512, w=512, aspect=-1):
+    def __init__(self, source_path, h=512, w=512, aspect=-1, eval=False):
         """b
         :param path: Path to colmap scene main folder.
         """
@@ -25,7 +25,7 @@ class CamScene:
 
         if os.path.exists(os.path.join(source_path, "sparse")):
             if h == -1 or w == -1:
-                scene_info = sceneLoadTypeCallbacks["Colmap"](source_path, None, False)
+                scene_info = sceneLoadTypeCallbacks["Colmap"](source_path, None, eval)
                 h = scene_info.train_cameras[0].height
                 w = scene_info.train_cameras[0].width
                 if w > 1920:
@@ -33,7 +33,7 @@ class CamScene:
                     h /= scale
                     w /= scale
             else:
-                scene_info = sceneLoadTypeCallbacks["Colmap_hw"](source_path, h, w, None, False)
+                scene_info = sceneLoadTypeCallbacks["Colmap_hw"](source_path, h, w, None, eval)
 
         else:
             assert False, "Could not recognize scene type!"

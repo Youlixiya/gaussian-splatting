@@ -46,7 +46,7 @@ def training(args, dataset, opt, pipe, saving_iterations):
     gaussians.load_ply(args.gs_source)
     img_name = os.listdir(os.path.join(args.colmap_dir, args.images))[0]
     h, w = cv2.imread(os.path.join(args.colmap_dir, args.images, img_name)).shape[:2]
-    scene = CamScene(args.colmap_dir, h=h, w=w)
+    scene = CamScene(args.colmap_dir, h=h, w=w, eval=True)
 
     feature_bg_color = torch.tensor([0] * gaussians.instance_feature_dim, dtype=torch.float32, device="cuda")
     # bg_color = torch.tensor([0, 0, 0], dtype=torch.float32, device="cuda")

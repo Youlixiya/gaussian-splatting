@@ -24,11 +24,11 @@ def get_accuracy(pred_mask, gt_mask):
     # tp_fn = (pred_mask == gt_mask).sum()
     return (pos_acc + neg_acc) / 2
 
-def get_pr(pred_mask, gt_mask):
-    # tp = (pred_mask == gt_mask).sum()
-    tp = ((pred_mask & gt_mask) == 255).sum()
-    tp_fp = (pred_mask.reshape(-1) == 255).sum()
-    return tp / tp_fp
+# def get_pr(pred_mask, gt_mask):
+#     # tp = (pred_mask == gt_mask).sum()
+#     tp = ((pred_mask & gt_mask) == 255).sum()
+#     tp_fp = (pred_mask.reshape(-1) == 255).sum()
+#     return tp / tp_fp
 
 if __name__ == '__main__':
     parser = ArgumentParser()
@@ -44,8 +44,8 @@ if __name__ == '__main__':
     scenes = []
     ious = []
     accs = []
-    prs = []
-    metrics = 'Scene\tIoU\tAcc\tPR\n'
+    # prs = []
+    metrics = 'Scene\tIoU\tAcc\n'
     for scene, scene_cfg in cfg.items():
         scenes.append(scene)
         scene_cfg = AttrDict(scene_cfg)
@@ -59,15 +59,15 @@ if __name__ == '__main__':
         gt_mask = np.array(gt_masks[i].resize((w, h)))
         iou = get_iou(mask, gt_mask)
         acc = get_accuracy(mask, gt_mask)
-        pr = get_pr(mask, gt_mask)
+        # pr = get_pr(mask, gt_mask)
         ious.append(iou)
         accs.append(acc)
-        prs.append(pr)
-        metrics += f'{scenes[i]}\t{iou}\t{acc}\t{pr}\n'
+        # prs.append(pr)
+        metrics += f'{scenes[i]}\t{iou}\t{acc}\n'
     mean_iou = sum(ious) / len(ious)
     mean_acc = sum(accs) / len(accs)
-    mean_pr = sum(prs) / len(prs)
-    metrics += f'mean\t{mean_iou}\t{mean_acc}\t{mean_pr}'
+    # mean_pr = sum(prs) / len(prs)
+    metrics += f'mean\t{mean_iou}\t{mean_acc}'
     with open(f'{args.save_tag}_metrics.txt', 'w') as f:
         f.write(metrics)
         

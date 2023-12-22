@@ -1,0 +1,57 @@
+{
+    "fern":{
+        "gs_source": "output/llff/fern/point_cloud/iteration_5000/point_cloud.ply",
+        "colmap_dir": "data/nerf_llff_data/fern",
+        "feature_gs_source": "output/llff/fern/point_cloud/iteration_5000/batch_contrastive_feature_gs_10000.pt",
+        "images": "images_4",
+        "save_path": "output/batch_contrastive_spinnerf_masks/fern",
+        "mask_threshold": 0.50,
+        "points": [[652, 477]]
+    },
+    "fortress":{
+        "gs_source": "output/llff/fortress/point_cloud/iteration_5000/point_cloud.ply",
+        "colmap_dir": "data/nerf_llff_data/fortress",
+        "feature_gs_source": "output/llff/fortress/point_cloud/iteration_5000/batch_contrastive_feature_gs_10000.pt",
+        "images": "images_4",
+        "save_path": "output/batch_contrastive_spinnerf_masks/fortress",
+        "mask_threshold": 0.5,
+        "points": [[395, 749]]
+    },
+    "horns":{
+        "gs_source": "output/llff/horns/point_cloud/iteration_5000/point_cloud.ply",
+        "colmap_dir": "data/nerf_llff_data/horns",
+        "feature_gs_source": "output/llff/horns/point_cloud/iteration_5000/batch_contrastive_feature_gs_10000.pt",
+        "images": "images_4",
+        "save_path": "output/batch_contrastive_spinnerf_masks/horns",
+        "mask_threshold": 0.6,
+        "points": [[384, 563], [408, 836]]
+    },
+    "leaves":{
+        "gs_source": "output/llff/leaves/point_cloud/iteration_5000/point_cloud.ply",
+        "colmap_dir": "data/nerf_llff_data/leaves",
+        "feature_gs_source": "output/llff/leaves/point_cloud/iteration_5000/batch_contrastive_feature_gs_10000.pt",
+        "images": "images_4",
+        "save_path": "output/batch_contrastive_spinnerf_masks/leaves",
+        "mask_threshold": 0.80,
+        "points": [[562, 709]]
+    },
+    "orchids":{
+        "gs_source": "output/llff/orchids/point_cloud/iteration_5000/point_cloud.ply",
+        "colmap_dir": "data/nerf_llff_data/orchids",
+        "feature_gs_source": "output/llff/orchids/point_cloud/iteration_5000/batch_contrastive_feature_gs_10000.pt",
+        "images": "images_4",
+        "save_path": "output/batch_contrastive_spinnerf_masks/orchids",
+        "mask_threshold": 0.8,
+        "points": [[247, 316], [160, 382], [304, 420], [199, 548], [304, 726], [475, 781], [560, 823], [387, 531]]
+    },
+    "room":{
+        "gs_source": "output/llff/room/point_cloud/iteration_5000/point_cloud.ply",
+        "colmap_dir": "data/nerf_llff_data/room",
+        "feature_gs_source": "output/llff/room/point_cloud/iteration_5000/batch_contrastive_feature_gs_10000.pt",
+        "images": "images_4",
+        "image_name": "DJI_20200223_163619_411.jpg",
+        "save_path": "output/batch_contrastive_spinnerf_masks/room",
+        "mask_threshold": 0.8,
+        "points": [[589, 578], [534, 624], [543, 618], [642, 629], [691, 698], [669, 654]]
+    }
+}
