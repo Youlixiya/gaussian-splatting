@@ -820,7 +820,8 @@ if __name__ == '__main__':
     lp = ModelParams(parser)
     pp = PipelineParams(parser)
     parser.add_argument("--gs_source", type=str, required=True)  # gs ply or obj file?
-    parser.add_argument("--feature_gs_source", type=str, default='')  # feature gs pt file?
+    parser.add_argument("--feature_gs_source", type=str, default='')  # feature gs pt file? 
+    parser.add_argument("--gs_feature_dim", type=int, default=16)
     parser.add_argument("--colmap_dir", type=str, required=True)  #
     parser.add_argument("--clip_model_type", type=str, default='ViT-B/16')  # gs ply or obj file?
     parser.add_argument("--clip_model_pretrained", type=str, default='mask_adapted_clip.pt')

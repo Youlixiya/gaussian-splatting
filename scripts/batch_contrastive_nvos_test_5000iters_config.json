@@ -5,9 +5,9 @@
         "feature_gs_source": "output/llff/fern/point_cloud/iteration_5000/batch_contrastive_feature_gs_10000.pt",
         "images": "images_4",
         "image_name": "IMG_4027.JPG",
-        "save_path": "output/llff/batch_contrastive_masks/fern",
+        "save_path": "output/batch_contrastive_nvos_5000iters_masks/fern",
         "mask_save_name": "IMG_4027_mask.png",
-        "mask_threshold": 0.80,
+        "mask_threshold": 0.8,
         "points": [[525, 525]]
     },
     "flower":{
@@ -16,9 +16,9 @@
         "feature_gs_source": "output/llff/flower/point_cloud/iteration_5000/batch_contrastive_feature_gs_10000.pt",
         "images": "images_4",
         "image_name": "IMG_2962.JPG",
-        "save_path": "output/llff/batch_contrastive_masks/flower",
+        "save_path": "output/batch_contrastive_nvos_5000iters_masks/flower",
         "mask_save_name": "IMG_2962_mask.png",
-        "mask_threshold": 0.8,
+        "mask_threshold": 0.7,
         "points": [[342, 747]]
     },
     "fortress":{
@@ -27,9 +27,9 @@
         "feature_gs_source": "output/llff/fortress/point_cloud/iteration_5000/batch_contrastive_feature_gs_10000.pt",
         "images": "images_4",
         "image_name": "IMG_1800.JPG",
-        "save_path": "output/llff/batch_contrastive_masks/fortress",
+        "save_path": "output/batch_contrastive_nvos_5000iters_masks/fortress",
         "mask_save_name": "IMG_1800_mask.png",
-        "mask_threshold": 0.8,
+        "mask_threshold": 0.5,
         "points": [[395, 749]]
     },
     "horns_center":{
@@ -38,9 +38,9 @@
         "feature_gs_source": "output/llff/horns/point_cloud/iteration_5000/batch_contrastive_feature_gs_10000.pt",
         "images": "images_4",
         "image_name": "DJI_20200223_163024_597.jpg",
-        "save_path": "output/llff/batch_contrastive_masks/horns_center",
+        "save_path": "output/batch_contrastive_nvos_5000iters_masks/horns_center",
         "mask_save_name": "DJI_20200223_163024_597_mask.png",
-        "mask_threshold": 0.6,
+        "mask_threshold": 0.7,
         "points": [[310, 512]]
     },
     "horns_left":{
@@ -49,9 +49,9 @@
         "feature_gs_source": "output/llff/horns/point_cloud/iteration_5000/batch_contrastive_feature_gs_10000.pt",
         "images": "images_4",
         "image_name": "DJI_20200223_163024_597.jpg",
-        "save_path": "output/llff/batch_contrastive_masks/horns_left",
+        "save_path": "output/batch_contrastive_nvos_5000iters_masks/horns_left",
         "mask_save_name": "DJI_20200223_163024_597_mask.png",
-        "mask_threshold": 0.60,
+        "mask_threshold": 0.70,
         "points": [[386, 145]]
     },
     "leaves":{
@@ -60,9 +60,9 @@
         "feature_gs_source": "output/llff/leaves/point_cloud/iteration_5000/batch_contrastive_feature_gs_10000.pt",
         "images": "images_4",
         "image_name": "IMG_2997.JPG",
-        "save_path": "output/llff/batch_contrastive_masks/leaves",
+        "save_path": "output/batch_contrastive_nvos_5000iters_masks/leaves",
         "mask_save_name": "IMG_2997_mask.png",
-        "mask_threshold": 0.80,
+        "mask_threshold": 0.70,
         "points": [[562, 709]]
     },
     "orchids":{
@@ -71,9 +71,9 @@
         "feature_gs_source": "output/llff/orchids/point_cloud/iteration_5000/batch_contrastive_feature_gs_10000.pt",
         "images": "images_4",
         "image_name": "IMG_4480.JPG",
-        "save_path": "output/llff/batch_contrastive_masks/orchids",
+        "save_path": "output/batch_contrastive_nvos_5000iters_masks/orchids",
         "mask_save_name": "IMG_4480_mask.png",
-        "mask_threshold": 0.8,
+        "mask_threshold": 0.75,
         "points": [[247, 348], [144, 382], [334, 451], [163, 517], [266, 641], [460, 709], [579, 789]]
     },
     "trex":{
@@ -82,9 +82,9 @@
         "feature_gs_source": "output/llff/trex/point_cloud/iteration_5000/batch_contrastive_feature_gs_10000.pt",
         "images": "images_4",
         "image_name": "DJI_20200223_163619_411.jpg",
-        "save_path": "output/llff/batch_contrastive_masks/trex",
+        "save_path": "output/batch_contrastive_nvos_5000iters_masks/trex",
         "mask_save_name": "DJI_20200223_163619_411_mask.png",
-        "mask_threshold": 0.7,
+        "mask_threshold": 0.65,
         "points": [[380, 662]]
     }
 }

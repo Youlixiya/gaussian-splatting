@@ -4,15 +4,25 @@ import math
 import numpy as np
 from tqdm import tqdm
 import torch.nn.functional as F
-from attrdict import AttrDict
 from PIL import Image
 from argparse import ArgumentParser
+from utils.general_utils import AttrDict
 
 def get_iou(pred_mask, gt_mask):
     intersection = pred_mask & gt_mask
     union = pred_mask | gt_mask
     iou = intersection.sum() / union.sum()
     return iou
+
+# def get_iou(pred_mask, gt_mask):
+#     ious = []
+#     intersection_pos = (pred_mask==255) & (gt_mask==255)
+#     union_pos = (pred_mask==255) | (gt_mask==255)
+#     ious.append(intersection_pos.sum() / union_pos.sum())
+#     intersection_neg = (pred_mask==0) & (gt_mask==0)
+#     union_neg = (pred_mask==0) | (gt_mask==0)
+#     ious.append(intersection_neg.sum() / union_neg.sum())
+#     return sum(ious) / len(ious)
 
 def get_accuracy(pred_mask, gt_mask):
     h, w = pred_mask.shape
@@ -23,6 +33,16 @@ def get_accuracy(pred_mask, gt_mask):
     neg_acc = ((pred_mask==0) & (gt_mask==0)).sum() / (gt_mask==0).sum()
     # tp_fn = (pred_mask == gt_mask).sum()
     return (pos_acc + neg_acc) / 2
+
+# def get_accuracy(pred_mask, gt_mask):
+#     h, w = pred_mask.shape
+#     # print(((pred_mask==255) & (gt_mask==255)).shape)
+#     # print((pred_mask==255).sum())
+#     pos_acc = ((pred_mask==255) & (gt_mask==255)).sum() / (gt_mask==255).sum()
+#     # print(pos_acc)
+#     # neg_acc = ((pred_mask==0) & (gt_mask==0)).sum() / (gt_mask==0).sum()
+#     # tp_fn = (pred_mask == gt_mask).sum()
+#     return pos_acc
 
 # def get_pr(pred_mask, gt_mask):
 #     # tp = (pred_mask == gt_mask).sum()

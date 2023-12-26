@@ -4,7 +4,7 @@ import torch
 import json
 import numpy as np
 import torch.nn.functional as F
-from attrdict import AttrDict
+from utils.general_utils import AttrDict
 from PIL import Image
 from scene.cameras import Simple_Camera, C2W_Camera, MiniCam
 from gaussian_renderer import render
@@ -60,26 +60,30 @@ if __name__ == '__main__':
         cfg = AttrDict(json.load(f)[args.scene])
     args = AttrDict(args.__dict__)
     args.update(cfg)
-    if 'rgb' in args.feature_gs_source:
-        rgb_decode = True
-    else:
-        rgb_decode = False
-    if 'depth' in args.feature_gs_source:
-        depth_decode = True
-    else:
-        depth_decode = False
-    gaussian = GaussianFeatureModel(sh_degree=3, rgb_decode=rgb_decode, depth_decode=depth_decode)
+    # if 'rgb' in args.feature_gs_source:
+    #     rgb_decode = True
+    # else:
+    #     rgb_decode = False
+    # if 'depth' in args.feature_gs_source:
+    #     depth_decode = True
+    # else:
+    #     depth_decode = False
+    gaussian = GaussianFeatureModel(sh_degree=3, gs_feature_dim=args.gs_feature_dim)
     gaussian.load_ply(args.gs_source)
     if args.feature_gs_source:
         gaussian.load_feature_params(args.feature_gs_source)
     
     background = torch.tensor([0, 0, 0], dtype=torch.float32, device="cuda")
-    feature_bg = torch.tensor([0] *gaussian.instance_feature_dim, dtype=torch.float32, device="cuda")
+    feature_bg = torch.tensor([0] *gaussian.gs_feature_dim, dtype=torch.float32, device="cuda")
     colmap_cameras = None
     render_cameras = None
     if args.colmap_dir is not None:
         img_name = os.listdir(os.path.join(args.colmap_dir, args.images))[0]
-        h, w = cv2.imread(os.path.join(args.colmap_dir, args.images, img_name)).shape[:2]
+        if args.h == -1 and args.w == -1:
+            h, w = cv2.imread(os.path.join(args.colmap_dir, args.images, img_name)).shape[:2]
+        else:
+            h = args.h
+            w = args.w
         scene = CamScene(args.colmap_dir, h=h, w=w)
         cameras_extent = scene.cameras_extent
         colmap_cameras = scene.cameras
@@ -97,7 +101,7 @@ if __name__ == '__main__':
             render_pkg = render(cam, gaussian, pipe, background)
             image_tensor = render_pkg['render'].permute(1, 2, 0).clamp(0, 1)
             image = Image.fromarray((image_tensor.cpu().numpy() * 255).astype(np.uint8))
-            render_feature = render(cam, gaussian, pipe, feature_bg, render_feature=True, override_feature=gaussian.instance_features)['render_feature']
+            render_feature = render(cam, gaussian, pipe, feature_bg, render_feature=True, override_feature=gaussian.gs_features)['render_feature']
             if instance_embeddings == None:
                 instance_embeddings = get_instance_embeddings(gaussian, args.points, render_feature)
             # total_rendered_feature = [render_feature]

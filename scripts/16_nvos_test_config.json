@@ -1,0 +1,98 @@
+{
+    "fern":{
+        "gs_source": "output/llff/fern/point_cloud/iteration_10000/point_cloud.ply",
+        "colmap_dir": "data/nerf_llff_data/fern",
+        "feature_gs_source": "output/llff/fern/point_cloud/iteration_10000/16_feature_gs_10000.pt",
+        "gs_feature_dim": 16,
+        "images": "images_4",
+        "image_name": "IMG_4027.JPG",
+        "save_path": "output/16_nvos_masks/fern",
+        "mask_save_name": "IMG_4027_mask.png",
+        "mask_threshold": 0.80,
+        "points": [[525, 525]]
+    },
+    "flower":{
+        "gs_source": "output/llff/flower/point_cloud/iteration_10000/point_cloud.ply",
+        "colmap_dir": "data/nerf_llff_data/flower",
+        "feature_gs_source": "output/llff/flower/point_cloud/iteration_10000/16_feature_gs_10000.pt",
+        "gs_feature_dim": 16,
+        "images": "images_4",
+        "image_name": "IMG_2962.JPG",
+        "save_path": "output/16_nvos_masks/flower",
+        "mask_save_name": "IMG_2962_mask.png",
+        "mask_threshold": 0.75,
+        "points": [[342, 747]]
+    },
+    "fortress":{
+        "gs_source": "output/llff/fortress/point_cloud/iteration_10000/point_cloud.ply",
+        "colmap_dir": "data/nerf_llff_data/fortress",
+        "feature_gs_source": "output/llff/fortress/point_cloud/iteration_10000/16_feature_gs_10000.pt",
+        "gs_feature_dim": 16,
+        "images": "images_4",
+        "image_name": "IMG_1800.JPG",
+        "save_path": "output/16_nvos_masks/fortress",
+        "mask_save_name": "IMG_1800_mask.png",
+        "mask_threshold": 0.5,
+        "points": [[395, 749]]
+    },
+    "horns_center":{
+        "gs_source": "output/llff/horns/point_cloud/iteration_10000/point_cloud.ply",
+        "colmap_dir": "data/nerf_llff_data/horns",
+        "feature_gs_source": "output/llff/horns/point_cloud/iteration_10000/16_feature_gs_10000.pt",
+        "gs_feature_dim": 16,
+        "images": "images_4",
+        "image_name": "DJI_20200223_163024_597.jpg",
+        "save_path": "output/16_nvos_masks/horns_center",
+        "mask_save_name": "DJI_20200223_163024_597_mask.png",
+        "mask_threshold": 0.65,
+        "points": [[310, 512]]
+    },
+    "horns_left":{
+        "gs_source": "output/llff/horns/point_cloud/iteration_10000/point_cloud.ply",
+        "colmap_dir": "data/nerf_llff_data/horns",
+        "feature_gs_source": "output/llff/horns/point_cloud/iteration_10000/16_feature_gs_10000.pt",
+        "gs_feature_dim": 16,
+        "images": "images_4",
+        "image_name": "DJI_20200223_163024_597.jpg",
+        "save_path": "output/16_nvos_masks/horns_left",
+        "mask_save_name": "DJI_20200223_163024_597_mask.png",
+        "mask_threshold": 0.65,
+        "points": [[386, 145]]
+    },
+    "leaves":{
+        "gs_source": "output/llff/leaves/point_cloud/iteration_10000/point_cloud.ply",
+        "colmap_dir": "data/nerf_llff_data/leaves",
+        "feature_gs_source": "output/llff/leaves/point_cloud/iteration_10000/16_feature_gs_10000.pt",
+        "gs_feature_dim": 16,
+        "images": "images_4",
+        "image_name": "IMG_2997.JPG",
+        "save_path": "output/16_nvos_masks/leaves",
+        "mask_save_name": "IMG_2997_mask.png",
+        "mask_threshold": 0.85,
+        "points": [[562, 709]]
+    },
+    "orchids":{
+        "gs_source": "output/llff/orchids/point_cloud/iteration_10000/point_cloud.ply",
+        "colmap_dir": "data/nerf_llff_data/orchids",
+        "feature_gs_source": "output/llff/orchids/point_cloud/iteration_10000/16_feature_gs_10000.pt",
+        "gs_feature_dim": 16,
+        "images": "images_4",
+        "image_name": "IMG_4480.JPG",
+        "save_path": "output/16_nvos_masks/orchids",
+        "mask_save_name": "IMG_4480_mask.png",
+        "mask_threshold": 0.90,
+        "points": [[247, 348], [144, 382], [334, 451], [163, 517], [266, 641], [460, 709], [317, 735]]
+    },
+    "trex":{
+        "gs_source": "output/llff/trex/point_cloud/iteration_10000/point_cloud.ply",
+        "colmap_dir": "data/nerf_llff_data/trex",
+        "feature_gs_source": "output/llff/trex/point_cloud/iteration_10000/16_feature_gs_10000.pt",
+        "gs_feature_dim": 16,
+        "images": "images_4",
+        "image_name": "DJI_20200223_163619_411.jpg",
+        "save_path": "output/16_nvos_masks/trex",
+        "mask_save_name": "DJI_20200223_163619_411_mask.png",
+        "mask_threshold": 0.65,
+        "points": [[380, 662]]
+    }
+}

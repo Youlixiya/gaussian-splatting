@@ -22,7 +22,7 @@ import torch
 from jaxtyping import Bool, Float
 from torch import Tensor
 
-from nerfstudio.utils import colors
+import utils.color as colors
 
 Colormaps = Literal["default", "turbo", "viridis", "magma", "inferno", "cividis", "gray", "pca"]
 

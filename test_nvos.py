@@ -4,7 +4,6 @@ import torch
 import json
 import numpy as np
 import torch.nn.functional as F
-from attrdict import AttrDict
 from PIL import Image
 from scene.cameras import Simple_Camera, C2W_Camera, MiniCam
 from gaussian_renderer import render
@@ -12,10 +11,11 @@ from scene.camera_scene import CamScene
 from scene import Scene, GaussianModel, GaussianFeatureModel
 from utils.colormaps import ColormapOptions, apply_colormap
 from utils.color import generate_contrasting_colors
+from utils.general_utils import AttrDict
 from argparse import ArgumentParser
 from arguments import ModelParams, PipelineParams, get_combined_args
 
-COLORS = generate_contrasting_colors()
+COLORS = torch.tensor(generate_contrasting_colors(500), dtype=torch.uint8, device='cuda')
 
 def point_instance_segmentation(image, gaussian, points, render_instance_feature, mask_threshold, device='cuda'):
     h, w = render_instance_feature.shape[1:]
@@ -33,17 +33,44 @@ def point_instance_segmentation(image, gaussian, points, render_instance_feature
     instance_mask_map = image.clone()
     instance_object_map = image.clone()
     for i, mask in enumerate(masks.permute(2, 0, 1)):
-        instance_mask_map[mask, :] = instance_mask_map[mask, :] * 0.5 + torch.tensor(COLORS[i], dtype=torch.float32, device=device) /255 * 0.5
+        instance_mask_map[mask, :] = instance_mask_map[mask, :] * 0.5 + COLORS[i] /255 * 0.5
     instance_mask_map[~masks_all_instance, :] /= 2
     instance_object_map[~masks_all_instance, :] = torch.tensor([1, 1, 1], dtype=torch.float32, device=device)
     
     return masks_all_instance, instance_mask_map, instance_object_map
 
-def instance_segmentation_all(gaussian, render_instance_feature):
+# def point_instance_segmentation(image, gaussian, points, render_instance_feature, mask_threshold, device='cuda'):
+#     h, w = render_instance_feature.shape[1:]
+#     points = torch.tensor(points, dtype=torch.int64, device=device)
+#     instance_embeddings_index = []
+#     for point in points:
+#         instance_embedding = F.normalize(render_instance_feature[:, point[0], point[1]][None], dim=-1)
+#         # instance_embedding = render_instance_feature[:, point[0], point[1]][None]
+#         instance_embedding_index = torch.argmax((instance_embedding @ gaussian.instance_embeddings.T).softmax(-1))
+#         instance_embeddings_index.append(instance_embedding_index)
+        
+#     instance_index = torch.argmax((render_instance_feature.reshape(-1, h * w).permute(1, 0) @ gaussian.instance_embeddings.T).softmax(-1), dim=-1).reshape(h, w)
+#     masks = []
+#     for instance_embedding_index in instance_embeddings_index:
+#         masks.append(instance_index == instance_embedding_index)
+#     masks = torch.stack(masks)
+#     # masks = (similarity_map > mask_threshold)
+#     masks_all_instance = masks.any(0)
+#     instance_mask_map = image.clone()
+#     instance_object_map = image.clone()
+#     for i, mask in enumerate(masks):
+#         instance_mask_map[mask, :] = instance_mask_map[mask, :] * 0.5 + COLORS[i] /255 * 0.5
+#     instance_mask_map[~masks_all_instance, :] /= 2
+#     instance_object_map[~masks_all_instance, :] = torch.tensor([1, 1, 1], dtype=torch.float32, device=device)
+    
+#     return masks_all_instance, instance_mask_map, instance_object_map
+
+
+def instance_segmentation_all(image, gaussian, render_instance_feature):
     h, w = render_instance_feature.shape[1:]
-    instance_index = torch.argmax((F.normalize(render_instance_feature.reshape(-1, h * w).permute(1, 0), dim=1) @ gaussian.instance_embeddings.T).softmax(-1), dim=-1).cpu()
+    instance_index = torch.argmax((render_instance_feature.reshape(-1, h * w).permute(1, 0) @ gaussian.instance_embeddings.T).softmax(-1), dim=-1).cpu()
     # print(instance_index)
-    instance_masks = gaussian.instance_colors[instance_index].reshape(h, w, 3)
+    instance_masks = COLORS[instance_index].reshape(h, w, 3) /255 * 0.5 + image * 0.5
     return instance_masks
 
 if __name__ == '__main__':
@@ -57,21 +84,21 @@ if __name__ == '__main__':
         cfg = AttrDict(json.load(f)[args.scene])
     args = AttrDict(args.__dict__)
     args.update(cfg)
-    if 'rgb' in args.feature_gs_source:
-        rgb_decode = True
-    else:
-        rgb_decode = False
-    if 'depth' in args.feature_gs_source:
-        depth_decode = True
-    else:
-        depth_decode = False
-    gaussian = GaussianFeatureModel(sh_degree=3, rgb_decode=rgb_decode, depth_decode=depth_decode)
+    # if 'rgb' in args.feature_gs_source:
+    #     rgb_decode = True
+    # else:
+    #     rgb_decode = False
+    # if 'depth' in args.feature_gs_source:
+    #     depth_decode = True
+    # else:
+    #     depth_decode = False
+    gaussian = GaussianFeatureModel(sh_degree=3, gs_feature_dim=args.gs_feature_dim)
     gaussian.load_ply(args.gs_source)
     if args.feature_gs_source:
         gaussian.load_feature_params(args.feature_gs_source)
     
     background = torch.tensor([0, 0, 0], dtype=torch.float32, device="cuda")
-    feature_bg = torch.tensor([0] *gaussian.instance_feature_dim, dtype=torch.float32, device="cuda")
+    feature_bg = torch.tensor([0] *gaussian.gs_feature_dim, dtype=torch.float32, device="cuda")
     colmap_cameras = None
     render_cameras = None
     if args.colmap_dir is not None:
@@ -92,28 +119,28 @@ if __name__ == '__main__':
         render_pkg = render(cam, gaussian, pipe, background)
         image_tensor = render_pkg['render'].permute(1, 2, 0).clamp(0, 1)
         image = Image.fromarray((image_tensor.cpu().numpy() * 255).astype(np.uint8))
-        render_feature = render(cam, gaussian, pipe, feature_bg, render_feature=True, override_feature=gaussian.instance_features)['render_feature']
-        total_rendered_feature = [render_feature]
-        if gaussian.rgb_decode:
-            total_rendered_feature.append(render_pkg['render'])
-        if gaussian.depth_decode:
-            total_rendered_feature.append(render_pkg['depth_3dgs'])
-        total_rendered_feature = torch.cat(total_rendered_feature, dim=0)
-        h, w = total_rendered_feature.shape[1:]
-        total_rendered_feature = total_rendered_feature.reshape(-1, h*w).permute(1, 0)
-        if gaussian.feature_aggregator:
-            total_rendered_feature = F.normalize(gaussian.feature_aggregator(total_rendered_feature), dim=-1)
-        else:
-            total_rendered_feature = F.normalize(total_rendered_feature, dim=-1)
-        total_rendered_feature = total_rendered_feature.permute(1, 0).reshape(-1, h, w)
-        masks_all_instance, instance_mask_map, instance_object_map = point_instance_segmentation(image_tensor, gaussian, args.points, total_rendered_feature, args.mask_threshold, device='cuda')
-        instance_masks = instance_segmentation_all(gaussian, total_rendered_feature)
+        render_feature = render(cam, gaussian, pipe, feature_bg, render_feature=True, override_feature=gaussian.gs_features)['render_feature']
+        # total_rendered_feature = [render_feature]
+        # if gaussian.rgb_decode:
+        #     total_rendered_feature.append(render_pkg['render'])
+        # if gaussian.depth_decode:
+        #     total_rendered_feature.append(render_pkg['depth_3dgs'])
+        # total_rendered_feature = torch.cat(total_rendered_feature, dim=0)
+        # h, w = total_rendered_feature.shape[1:]
+        # total_rendered_feature = total_rendered_feature.reshape(-1, h*w).permute(1, 0)
+        # if gaussian.feature_aggregator:
+        #     total_rendered_feature = F.normalize(gaussian.feature_aggregator(total_rendered_feature), dim=-1)
+        # else:
+        instance_feature = F.normalize(render_feature.reshape(-1, h*w), dim=0).reshape(-1, h, w)
+        # instance_feature = F.normalize(gaussian.instance_feature_decoder(render_feature[None])[0].reshape(-1, h*w), dim=0).reshape(-1, h, w)
+        masks_all_instance, instance_mask_map, instance_object_map = point_instance_segmentation(image_tensor, gaussian, args.points, instance_feature, args.mask_threshold, device='cuda')
+        instance_masks = instance_segmentation_all(image_tensor, gaussian, instance_feature)
         image.save(os.path.join(args.save_path, f'rendered_rgb_{args.image_name}'))
         Image.fromarray((apply_colormap(render_feature.permute(1, 2, 0), ColormapOptions(colormap="pca")).cpu().numpy() * 255).astype(np.uint8)).save(os.path.join(args.save_path, f'rendered_feature_pca_{args.image_name}'))
-        Image.fromarray((apply_colormap(total_rendered_feature.permute(1, 2, 0), ColormapOptions(colormap="pca")).cpu().numpy() * 255).astype(np.uint8)).save(os.path.join(args.save_path, f'total_rendered_feature_pca_{args.image_name}'))
+        Image.fromarray((apply_colormap(instance_feature.permute(1, 2, 0), ColormapOptions(colormap="pca")).cpu().numpy() * 255).astype(np.uint8)).save(os.path.join(args.save_path, f'instance_feature_pca_{args.image_name}'))
         Image.fromarray(np.stack([(masks_all_instance.cpu().numpy() * 255).astype(np.uint8)] * 3, axis=-1)).save(os.path.join(args.save_path, args.mask_save_name))
         Image.fromarray((instance_mask_map.clamp(0, 1).cpu().numpy() * 255).astype(np.uint8)).save(os.path.join(args.save_path, f'instance_mask_map_{args.image_name}'))
         Image.fromarray((instance_object_map.clamp(0, 1).cpu().numpy() * 255).astype(np.uint8)).save(os.path.join(args.save_path, f'instance_object_map_{args.image_name}'))
-        Image.fromarray((instance_masks.cpu().numpy()).astype(np.uint8)).save(os.path.join(args.save_path, f'instance_masks_{args.image_name}'))
+        Image.fromarray((instance_masks.clamp(0, 1).cpu().numpy() * 255).astype(np.uint8)).save(os.path.join(args.save_path, f'instance_masks_{args.image_name}'))
     # device = "cuda:0"
     # self.colors = np.random.random((500, 3))

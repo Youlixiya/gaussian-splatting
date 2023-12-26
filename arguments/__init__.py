@@ -47,6 +47,8 @@ class ParamGroup:
 class ModelParams(ParamGroup): 
     def __init__(self, parser, sentinel=False):
         self.sh_degree = 3
+        self.gs_feature_dim = 16
+        # self._instance_feature_dim = 8
         self._source_path = ""
         self._model_path = ""
         self._images = "images"
@@ -70,7 +72,7 @@ class PipelineParams(ParamGroup):
 
 class OptimizationParams(ParamGroup):
     def __init__(self, parser):
-        self.iterations = 30_000
+        self.iterations = 10_000
         self.feature_iterations = 10_000
         self.position_lr_init = 0.00016
         self.position_lr_final = 0.0000016
@@ -85,15 +87,11 @@ class OptimizationParams(ParamGroup):
         self.contrastive_ratio = 2.0
         self.batch_size = 4096
         self.temperature = 1
+        self.queue_len = 4096
         self.gs_features_lr = 0.001
-        self.semantic_features_lr = 0.001
         self.instance_features_lr = 0.001
-        self.instance_embedding_lr = 0.001
-        self.semantic_embedding_lr = 0.001
-        self.semantic_decoder_lr = 0.001
-        self.semantic_compressor_lr = 0.001
-        # self.mask_decoder_lr = 0.0005
-        self.mask_decoder_lr = 0.001
+        self.instance_embeddings_lr = 0.001
+        self.instance_feature_decoder_lr = 0.001
         # self.extra_feature_lr_init = 0.0001
         # self.extra_feature_lr_final = 0.00001
         # self.extra_feature_lr_delay_mult = 0.01

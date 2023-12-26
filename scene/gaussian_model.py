@@ -35,7 +35,7 @@ from knn import K_nearest_neighbors
 from utils.mesh import Mesh
 from utils.mesh_utils import decimate_mesh, clean_mesh
 from scene.feature_model import Codebook, MLP, semanticTable
-import kiui
+
 # from threestudio.utils.typing import Bool, Tensor
 
 MAX_ANCHOR_WEIGHT = 10
@@ -466,271 +466,23 @@ class GaussianModel:
 
     def set_mask(self, mask):
         self.mask = mask
-        
-    @torch.no_grad()
-    def extract_fields(self, resolution=128, num_blocks=16, relax_ratio=1.5):
-        # resolution: resolution of field
-        
-        block_size = 2 / num_blocks
-
-        assert resolution % block_size == 0
-        split_size = resolution // num_blocks
-
-        opacities = self.get_opacity
-
-        # pre-filter low opacity gaussians to save computation
-        mask = (opacities > 0.005).squeeze(1)
-
-        opacities = opacities[mask]
-        xyzs = self.get_xyz[mask]
-        stds = self.get_scaling[mask]
-        
-        # normalize to ~ [-1, 1]
-        mn, mx = xyzs.amin(0), xyzs.amax(0)
-        self.center = (mn + mx) / 2
-        self.scale = 1.8 / (mx - mn).amax().item()
-
-        xyzs = (xyzs - self.center) * self.scale
-        stds = stds * self.scale
-
-        covs = self.covariance_activation(stds, 1, self._rotation[mask])
-
-        # tile
-        device = opacities.device
-        occ = torch.zeros([resolution] * 3, dtype=torch.float32, device=device)
-
-        X = torch.linspace(-1, 1, resolution).split(split_size)
-        Y = torch.linspace(-1, 1, resolution).split(split_size)
-        Z = torch.linspace(-1, 1, resolution).split(split_size)
-
-
-        # loop blocks (assume max size of gaussian is small than relax_ratio * block_size !!!)
-        for xi, xs in enumerate(X):
-            for yi, ys in enumerate(Y):
-                for zi, zs in enumerate(Z):
-                    xx, yy, zz = torch.meshgrid(xs, ys, zs)
-                    # sample points [M, 3]
-                    pts = torch.cat([xx.reshape(-1, 1), yy.reshape(-1, 1), zz.reshape(-1, 1)], dim=-1).to(device)
-                    # in-tile gaussians mask
-                    vmin, vmax = pts.amin(0), pts.amax(0)
-                    vmin -= block_size * relax_ratio
-                    vmax += block_size * relax_ratio
-                    mask = (xyzs < vmax).all(-1) & (xyzs > vmin).all(-1)
-                    # if hit no gaussian, continue to next block
-                    if not mask.any():
-                        continue
-                    mask_xyzs = xyzs[mask] # [L, 3]
-                    mask_covs = covs[mask] # [L, 6]
-                    mask_opas = opacities[mask].view(1, -1) # [L, 1] --> [1, L]
-
-                    # query per point-gaussian pair.
-                    g_pts = pts.unsqueeze(1).repeat(1, mask_covs.shape[0], 1) - mask_xyzs.unsqueeze(0) # [M, L, 3]
-                    g_covs = mask_covs.unsqueeze(0).repeat(pts.shape[0], 1, 1) # [M, L, 6]
-
-                    # batch on gaussian to avoid OOM
-                    batch_g = 1024
-                    val = 0
-                    for start in range(0, g_covs.shape[1], batch_g):
-                        end = min(start + batch_g, g_covs.shape[1])
-                        w = gaussian_3d_coeff(g_pts[:, start:end].reshape(-1, 3), g_covs[:, start:end].reshape(-1, 6)).reshape(pts.shape[0], -1) # [M, l]
-                        val += (mask_opas[:, start:end] * w).sum(-1)
-                    
-                    # kiui.lo(val, mask_opas, w)
-                
-                    occ[xi * split_size: xi * split_size + len(xs), 
-                        yi * split_size: yi * split_size + len(ys), 
-                        zi * split_size: zi * split_size + len(zs)] = val.reshape(len(xs), len(ys), len(zs)) 
-        
-        kiui.lo(occ, verbose=1)
-
-        return occ
-    
-    def extract_mesh(self, path, density_thresh=1, resolution=128, decimate_target=1e5):
-
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-
-        occ = self.extract_fields(resolution).detach().cpu().numpy()
-
-        import mcubes
-        vertices, triangles = mcubes.marching_cubes(occ, density_thresh)
-        vertices = vertices / (resolution - 1.0) * 2 - 1
-
-        # transform back to the original space
-        vertices = vertices / self.scale + self.center.detach().cpu().numpy()
-
-        vertices, triangles = clean_mesh(vertices, triangles, remesh=True, remesh_size=0.015)
-        if decimate_target > 0 and triangles.shape[0] > decimate_target:
-            vertices, triangles = decimate_mesh(vertices, triangles, decimate_target)
-
-        v = torch.from_numpy(vertices.astype(np.float32)).contiguous().cuda()
-        f = torch.from_numpy(triangles.astype(np.int32)).contiguous().cuda()
-
-        print(
-            f"[INFO] marching cubes result: {v.shape} ({v.min().item()}-{v.max().item()}), {f.shape}"
-        )
-
-        mesh = Mesh(v=v, f=f, device='cuda')
-
-        return mesh
-
-# class GaussianFeatureModel(GaussianModel):
-#     def __init__(self,
-#                  sh_degree : int,
-#                  instance_feature_dim=16,
-#                  rgb_decode=False,
-#                  depth_decode=False,
-#                  device='cuda:0'):
-#         super().__init__(sh_degree)
-#         self.instance_feature_dim = instance_feature_dim
-#         self.rgb_decode = rgb_decode
-#         self.depth_decode = depth_decode
-#         self.total_feature_dim = instance_feature_dim
-#         if rgb_decode:
-#             self.total_feature_dim = self.total_feature_dim + 3
-#         if depth_decode:
-#             self.total_feature_dim = self.total_feature_dim + 1
-#         self.device = device
-        
-#     def set_instance_embeddings(self, instance_num):
-#         self.instance_num = instance_num
-#         self.instance_embeddings = nn.Parameter(torch.randn((instance_num, self.total_feature_dim), dtype=torch.float, device=self.device).requires_grad_(True))
-    
-#     def set_clip_embeddings(self, clip_embeddings):
-#         self.clip_embeddings = clip_embeddings
-    
-#     def set_instance_colors(self, instance_colors):
-#         self.instance_colors = instance_colors
-
-#     def capture(self):
-#         return (
-#             self.active_sh_degree,
-#             self._xyz,
-#             self._features_dc,
-#             self._features_rest,
-#             self._scaling,
-#             self._rotation,
-#             self._opacity,
-#             self.instance_features,
-#             self.max_radii2D,
-#             self.xyz_gradient_accum,
-#             self.denom,
-#             self.optimizer.state_dict(),
-#             self.spatial_lr_scale,
-#         )
-    
-#     @property
-#     def get_instance_features(self):
-#         return self.instance_features
-
-#     def load_ply(self, path):
-#         plydata = PlyData.read(path)
-
-#         xyz = np.stack((np.asarray(plydata.elements[0]["x"]),
-#                         np.asarray(plydata.elements[0]["y"]),
-#                         np.asarray(plydata.elements[0]["z"])),  axis=1)
-#         opacities = np.asarray(plydata.elements[0]["opacity"])[..., np.newaxis]
-
-#         features_dc = np.zeros((xyz.shape[0], 3, 1))
-#         features_dc[:, 0, 0] = np.asarray(plydata.elements[0]["f_dc_0"])
-#         features_dc[:, 1, 0] = np.asarray(plydata.elements[0]["f_dc_1"])
-#         features_dc[:, 2, 0] = np.asarray(plydata.elements[0]["f_dc_2"])
-
-#         extra_f_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("f_rest_")]
-#         extra_f_names = sorted(extra_f_names, key = lambda x: int(x.split('_')[-1]))
-#         assert len(extra_f_names)==3*(self.max_sh_degree + 1) ** 2 - 3
-#         features_extra = np.zeros((xyz.shape[0], len(extra_f_names)))
-#         for idx, attr_name in enumerate(extra_f_names):
-#             features_extra[:, idx] = np.asarray(plydata.elements[0][attr_name])
-#         # Reshape (P,F*SH_coeffs) to (P, F, SH_coeffs except DC)
-#         features_extra = features_extra.reshape((features_extra.shape[0], 3, (self.max_sh_degree + 1) ** 2 - 1))
-
-#         scale_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("scale_")]
-#         scale_names = sorted(scale_names, key = lambda x: int(x.split('_')[-1]))
-#         scales = np.zeros((xyz.shape[0], len(scale_names)))
-#         for idx, attr_name in enumerate(scale_names):
-#             scales[:, idx] = np.asarray(plydata.elements[0][attr_name])
-
-#         rot_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("rot")]
-#         rot_names = sorted(rot_names, key = lambda x: int(x.split('_')[-1]))
-#         rots = np.zeros((xyz.shape[0], len(rot_names)))
-#         for idx, attr_name in enumerate(rot_names):
-#             rots[:, idx] = np.asarray(plydata.elements[0][attr_name])
-
-#         self._xyz = nn.Parameter(torch.tensor(xyz, dtype=torch.float, device=self.device).requires_grad_(False))
-#         self._features_dc = nn.Parameter(torch.tensor(features_dc, dtype=torch.float, device=self.device).transpose(1, 2).contiguous().requires_grad_(False))
-#         self._features_rest = nn.Parameter(torch.tensor(features_extra, dtype=torch.float, device=self.device).transpose(1, 2).contiguous().requires_grad_(False))
-#         self.instance_features =  nn.Parameter(torch.randn((self._xyz.shape[0], self.instance_feature_dim), dtype=torch.float, device=self.device).requires_grad_(True))
-#         self._opacity = nn.Parameter(torch.tensor(opacities, dtype=torch.float, device=self.device).requires_grad_(False))
-#         self._scaling = nn.Parameter(torch.tensor(scales, dtype=torch.float, device=self.device).requires_grad_(False))
-#         self._rotation = nn.Parameter(torch.tensor(rots, dtype=torch.float, device=self.device).requires_grad_(False))
-
-#         self.active_sh_degree = self.max_sh_degree
-    
-#     def save_feature_params(self, path, iter):
-#         mkdir_p(os.path.dirname(path))
-#         state = {
-#             'instance_features': self.instance_features.detach().cpu().numpy(),
-#             'instance_embeddings': self.instance_embeddings.detach().cpu().numpy(),
-#             'clip_embeddings': self.clip_embeddings,
-#             'instance_colors': self.instance_colors.cpu(),
-#             'instance_num': self.instance_num,
-#             'rgb_decode': self.rgb_decode,
-#             'depth_decode': self.depth_decode
-            
-#             # 'semantic_compressor': self.semantic_compressor.state_dict(),
-#         }
-#         rgb_decode = 'rgb_' if self.rgb_decode else ''
-#         depth_decode = 'depth_' if self.depth_decode else ''
-#         save_path = os.path.join(path, f'feature_gs_{rgb_decode}{depth_decode}{iter}.pt')
-#         torch.save(state, save_path)
-    
-#     def load_feature_params(self, params_path):
-#         state = torch.load(params_path)
-#         self.instance_features = nn.Parameter(torch.tensor(state['instance_features'], dtype=torch.float, device=self.device).requires_grad_(False))
-#         self.instance_embeddings = nn.Parameter(torch.tensor(state['instance_embeddings'], dtype=torch.float, device=self.device).requires_grad_(False))
-#         self.instance_embeddings = F.normalize(self.instance_embeddings, dim=-1)
-#         self.instance_colors = state['instance_colors']
-#         self.instance_num = state['instance_num']
-#         self.clip_embeddings = state['clip_embeddings']
-#         self.rgb_decode = state['rgb_decode']
-#         self.depth_decode = state['depth_decode']
-        
-    
-#     def feature_training_setup(self, training_args):
-
-#         l = [
-#             {'params': [self.instance_features], 'lr': training_args.instance_features_lr, "name": "instance_features"},
-#             {'params': [self.instance_embeddings], 'lr': training_args.instance_embedding_lr, "name": "instance_embedding"},
-#         ]
-
-#         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
-
 
 class GaussianFeatureModel(GaussianModel):
     def __init__(self,
                  sh_degree : int,
-                 instance_feature_dim=16,
-                 rgb_decode=False,
-                 depth_decode=False,
+                 gs_feature_dim=16,
+                #  instance_feature_dim=16,
                  device='cuda:0'):
         super().__init__(sh_degree)
-        self.instance_feature_dim = instance_feature_dim
-        self.rgb_decode = rgb_decode
-        self.depth_decode = depth_decode
-        self.total_feature_dim = instance_feature_dim
-        if rgb_decode:
-            self.total_feature_dim = self.total_feature_dim + 3
-        if depth_decode:
-            self.total_feature_dim = self.total_feature_dim + 1
-        if rgb_decode or depth_decode:
-            self.feature_aggregator = MLP(self.total_feature_dim, self.instance_feature_dim, self.instance_feature_dim, 2).to(device)
-        else:
-            self.feature_aggregator = None
+        self.gs_feature_dim = gs_feature_dim
+        # self.instance_feature_dim = instance_feature_dim
+        # self.instance_feature_decoder = MLP(gs_feature_dim, self.instance_feature_dim, self.instance_feature_dim, 2).to(device)
+        # self.instance_feature_decoder = nn.Conv2d(gs_feature_dim, self.instance_feature_dim, 1).to(device)
         self.device = device
         
     def set_instance_embeddings(self, instance_num):
         self.instance_num = instance_num
-        self.instance_embeddings = torch.zeros((instance_num, self.instance_feature_dim), dtype=torch.float, device=self.device).requires_grad_(False)
+        self.instance_embeddings = torch.randn((instance_num, self.gs_feature_dim), dtype=torch.float, device=self.device).requires_grad_(True)
     
     def set_clip_embeddings(self, clip_embeddings):
         self.clip_embeddings = clip_embeddings
@@ -796,7 +548,7 @@ class GaussianFeatureModel(GaussianModel):
         self._xyz = nn.Parameter(torch.tensor(xyz, dtype=torch.float, device=self.device).requires_grad_(False))
         self._features_dc = nn.Parameter(torch.tensor(features_dc, dtype=torch.float, device=self.device).transpose(1, 2).contiguous().requires_grad_(False))
         self._features_rest = nn.Parameter(torch.tensor(features_extra, dtype=torch.float, device=self.device).transpose(1, 2).contiguous().requires_grad_(False))
-        self.instance_features =  nn.Parameter(torch.randn((self._xyz.shape[0], self.instance_feature_dim), dtype=torch.float, device=self.device).requires_grad_(True))
+        self.gs_features =  nn.Parameter(torch.randn((self._xyz.shape[0], self.gs_feature_dim), dtype=torch.float, device=self.device).requires_grad_(True))
         self._opacity = nn.Parameter(torch.tensor(opacities, dtype=torch.float, device=self.device).requires_grad_(False))
         self._scaling = nn.Parameter(torch.tensor(scales, dtype=torch.float, device=self.device).requires_grad_(False))
         self._rotation = nn.Parameter(torch.tensor(rots, dtype=torch.float, device=self.device).requires_grad_(False))
@@ -805,43 +557,42 @@ class GaussianFeatureModel(GaussianModel):
     
     def save_feature_params(self, path, iter, extra=''):
         mkdir_p(os.path.dirname(path))
-        feature_aggregator_ckpt = self.feature_aggregator.state_dict() if self.feature_aggregator else None
+        # feature_aggregator_ckpt = self.feature_aggregator.state_dict() if self.feature_aggregator else None
         state = {
-            'instance_features': self.instance_features.detach().cpu().numpy(),
+            'gs_features': self.gs_features.detach().cpu().numpy(),
             'instance_embeddings': self.instance_embeddings.detach().cpu().numpy(),
-            'feature_aggregator': feature_aggregator_ckpt,
+            # 'instance_feature_decoder': self.instance_feature_decoder.state_dict(),
             'clip_embeddings': self.clip_embeddings,
             'instance_colors': self.instance_colors.cpu(),
             'instance_num': self.instance_num,
-            'rgb_decode': self.rgb_decode,
-            'depth_decode': self.depth_decode
-            
-            # 'semantic_compressor': self.semantic_compressor.state_dict(),
         }
-        rgb_decode = 'rgb_' if self.rgb_decode else ''
-        depth_decode = 'depth_' if self.depth_decode else ''
-        save_path = os.path.join(path, f'{extra}_feature_gs_{rgb_decode}{depth_decode}{iter}.pt')
+        # # rgb_decode = 'rgb_' if self.rgb_decode else ''
+        # depth_decode = 'depth_' if self.depth_decode else ''
+        save_path = os.path.join(path, f'{extra}_feature_gs_{iter}.pt')
         torch.save(state, save_path)
     
     def load_feature_params(self, params_path):
         state = torch.load(params_path)
-        self.instance_features = nn.Parameter(torch.tensor(state['instance_features'], dtype=torch.float, device=self.device).requires_grad_(False))
+        self.gs_features = nn.Parameter(torch.tensor(state['gs_features'], dtype=torch.float, device=self.device).requires_grad_(False))
         self.instance_embeddings = nn.Parameter(torch.tensor(state['instance_embeddings'], dtype=torch.float, device=self.device).requires_grad_(False))
         self.instance_embeddings = F.normalize(self.instance_embeddings, dim=-1)
         self.instance_colors = state['instance_colors']
         self.instance_num = state['instance_num']
         self.clip_embeddings = state['clip_embeddings']
-        self.rgb_decode = state['rgb_decode']
-        self.depth_decode = state['depth_decode']
-        if state['feature_aggregator']:
-            self.feature_aggregator.load_state_dict(state['feature_aggregator'])
+        # self.instance_feature_decoder.load_state_dict(state['instance_feature_decoder'])
         
     
     def feature_training_setup(self, training_args):
-
+        # if self.feature_aggregator is None:
+        #     l = [
+        #         {'params': [self.instance_features], 'lr': training_args.instance_features_lr, "name": "instance_features"},
+        #         # {'params': [self.instance_embeddings], 'lr': training_args.instance_embedding_lr, "name": "instance_embedding"},
+        #     ]
+        # else:
         l = [
-            {'params': [self.instance_features], 'lr': training_args.instance_features_lr, "name": "instance_features"},
-            # {'params': [self.instance_embeddings], 'lr': training_args.instance_embedding_lr, "name": "instance_embedding"},
+            {'params': [self.gs_features], 'lr': training_args.instance_features_lr, "name": "instance_features"},
+            {'params': [self.instance_embeddings], 'lr': training_args.instance_embeddings_lr, "name": "instance_embeddings"},
+            # {'params': self.instance_feature_decoder.parameters(), 'lr': training_args.instance_feature_decoder_lr, "name": "instance_feature_decoder"},
         ]
 
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)

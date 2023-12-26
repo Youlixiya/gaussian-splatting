@@ -245,7 +245,7 @@ class MaskDataset(Dataset):
                     if tmp_clip_embedding is None:
                         tmp_clip_embedding = mask_embedding
                     else:
-                        semantic_similarity = torch.nn.functional.cosine_similarity(mask_embedding[None], tmp_clip_embedding)
+                        semantic_similarity = torch.nn.functional.cosine_similarity(mask_embedding[None], tmp_clip_embedding[None])
                         if semantic_similarity >= self.semantic_similarity:
                             tmp_clip_embedding = torch.nn.functional.normalize(tmp_clip_embedding + mask_embedding, dim=-1)
                     # tmp_clip_embedding.append(mask_embedding)

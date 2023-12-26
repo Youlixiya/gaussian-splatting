@@ -5,7 +5,7 @@ import math
 import numpy as np
 from tqdm import tqdm
 import torch.nn.functional as F
-from attrdict import AttrDict
+from utils.general_utils import AttrDict
 from PIL import Image
 from argparse import ArgumentParser
 
@@ -58,13 +58,58 @@ if __name__ == '__main__':
                 gt_mask_root_path = os.path.join(args.gt_path, root_dir)
         gt_masks_name = os.listdir(gt_mask_root_path)
         gt_masks_name = [gt_mask_name for gt_mask_name in gt_masks_name if 'pseudo' in gt_mask_name]
-        gt_masks_name.sort()
+        if scene in ['Truck']:
+            gt_masks_name.sort(key=lambda x: int(x.split('_')[1][-3:]))
+        else:
+            gt_masks_name.sort()
         gt_masks_path = [os.path.join(gt_mask_root_path, gt_mask_name) for gt_mask_name in gt_masks_name]
         gt_masks = [cv2.cvtColor(cv2.imread(gt_mask_path), cv2.COLOR_BGR2RGB) for gt_mask_path in gt_masks_path]
         if scene == 'orchids':
             masks.pop(13)
+        elif scene in ['Truck']:
+            
+            tmp_masks = []
+            index = 0
+            for i in range(len(gt_masks)):
+                mask_name = masks_name[index]
+                gt_mask_name = gt_masks_name[i]
+                mask_index = int(mask_name.split('_')[1][:3]) + 1
+                gt_mask_index = int(gt_mask_name.split('_')[1][-3:])
+                # print(mask_index)
+                # print(gt_mask_index)
+                while(mask_index != gt_mask_index):
+                    index += 1
+                    mask_name = masks_name[index]
+                    mask_index = int(mask_name.split('_')[1][:3]) + 1
+                tmp_masks.append(masks[index])
+                # if gt_mask_name == gt_masks_name[-1]:
+                #     break
+                # print(mask_name)
+                # print(gt_mask_name)
+                index += 1
+            masks = tmp_masks
+        elif scene in ['lego_real_night_radial']:
+            images_name = os.listdir(os.path.join(scene_cfg.colmap_dir, scene_cfg.images))
+            images_name.sort()
+            # print(images_name)
+            # print(gt_masks_name)
+            tmp_masks = []
+            index = 0
+            for gt_mask_name in gt_masks_name:
+                # print(images_name[index][:7])
+                # print(gt_masks_name[:7])
+                while images_name[index][:7] != gt_mask_name[:7]:
+                    index += 1
+                tmp_masks.append(masks[index])
+                # print(images_name[index][:7])
+                # print(gt_mask_name[:7])
+                index += 1
+            masks = tmp_masks
         iou = []
         acc = []
+        # print(scene)
+        # print(len(masks))
+        # print(len(gt_masks))
         for i in tqdm(range(len(masks))):
             gt_mask = gt_masks[i][..., 0]
             # gt_mask = gt_mask * 255
