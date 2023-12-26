@@ -72,34 +72,16 @@ class ViserViewer:
         self.cfg = cfg
         self.gs_source = cfg.gs_source
         self.colmap_dir = cfg.colmap_dir
-        if 'rgb' in cfg.feature_gs_source:
-            rgb_decode = True
-        else:
-            rgb_decode = False
-        if 'depth' in cfg.feature_gs_source:
-            depth_decode = True
-        else:
-            depth_decode = False
-        self.gaussian = GaussianFeatureModel(sh_degree=3, rgb_decode=rgb_decode, depth_decode=depth_decode)
+        self.gaussian = GaussianFeatureModel(sh_degree=3, gs_feature_dim=cfg.gs_feature_dim)
         self.gaussian.load_ply(self.gs_source)
         if cfg.feature_gs_source:
             self.gaussian.load_feature_params(cfg.feature_gs_source)
         parser = ArgumentParser(description="Training script parameters")
         self.pipe = PipelineParams(parser)
-        # self.set_system(System(self.gaussian, pipe, background_tensor))
         self.device = "cuda:0"
         self.port = 8080
         self.colors = np.random.random((500, 3))
-        self.use_sam = False
-        # self.guidance = None
-        # self.stop_training = False
-        # self.inpaint_end_flag = False
-        self.scale_depth = True
-        self.depth_end_flag = False
-        self.seg_scale = True
-        self.seg_scale_end = False
         self.renderer_output_cache = 'comp_rgb'
-        
         self.render_times = deque(maxlen=3)
         self.server = viser.ViserServer(port=self.port)
         self.semantic_valid_num = None
@@ -108,9 +90,9 @@ class ViserViewer:
         self.semantic_colors = []
         self.instance_embeddings = []
         self.instance_colors = []
-        self.colors = generate_contrasting_colors(200)
+        self.colors = generate_contrasting_colors(500)
         self.point_pos = None
-        self.points3d = []
+        # self.points3d = []
          # front end related
         self.colmap_cameras = None
         self.render_cameras = None
@@ -254,10 +236,11 @@ class ViserViewer:
         
         @self.vlm_chat.on_click
         def _(_):
-            if self.cfg.llava:
-                self.get_object_name_from_implicit_query()
-            else:
-                self.get_object_name_by_gemini()
+            self.get_mask_by_lisa()
+            # if self.cfg.llava:
+            #     self.get_object_name_from_implicit_query()
+            # else:
+            #     self.get_object_name_by_gemini()
             self.need_update = True
         
         @self.show_semantic_map.on_update
@@ -622,29 +605,30 @@ class ViserViewer:
             # render_feature = render(cam, self.gaussian, self.pipe, self.background_tensor, render_feature=True)['render_feature']
             rendered_feature = render(cam, self.gaussian, self.pipe, self.instance_feature_bg_color, render_feature=True, override_feature=self.gaussian.instance_features)['render_feature']
             h, w = rendered_feature.shape[1:]
-            total_rendered_feature = [rendered_feature]
-            if self.gaussian.rgb_decode:
-                total_rendered_feature.append(render_pkg['render'])
-            if self.gaussian.depth_decode:
-                total_rendered_feature.append(render_pkg['depth_3dgs'])
-            total_rendered_feature = torch.cat(total_rendered_feature, dim=0)
-            total_rendered_feature = total_rendered_feature.reshape(-1, h*w).permute(1, 0)
-            if self.gaussian.feature_aggregator:
-                total_rendered_feature = F.normalize(self.gaussian.feature_aggregator(total_rendered_feature), dim=-1)
-            else:
-                total_rendered_feature = F.normalize(total_rendered_feature, dim=-1)
-            total_rendered_feature = total_rendered_feature.permute(1, 0).reshape(-1, h, w)
+            instance_feature = F.normalize(rendered_feature.reshape(-1, h * w), dim=0).reshape(-1, h, w)
+            # total_rendered_feature = [rendered_feature]
+            # if self.gaussian.rgb_decode:
+            #     total_rendered_feature.append(render_pkg['render'])
+            # if self.gaussian.depth_decode:
+            #     total_rendered_feature.append(render_pkg['depth_3dgs'])
+            # total_rendered_feature = torch.cat(total_rendered_feature, dim=0)
+            # total_rendered_feature = total_rendered_feature.reshape(-1, h*w).permute(1, 0)
+            # if self.gaussian.feature_aggregator:
+            #     total_rendered_feature = F.normalize(self.gaussian.feature_aggregator(total_rendered_feature), dim=-1)
+            # else:
+            #     total_rendered_feature = F.normalize(total_rendered_feature, dim=-1)
+            # total_rendered_feature = total_rendered_feature.permute(1, 0).reshape(-1, h, w)
             render_pkg['rendered_feature'] = apply_colormap(rendered_feature.permute(1, 2, 0), ColormapOptions(colormap="pca"))[None]
-            render_pkg['total_rendered_feature'] = apply_colormap(total_rendered_feature.permute(1, 2, 0), ColormapOptions(colormap="pca"))[None]
+            render_pkg['instance_feature'] = apply_colormap(instance_feature.permute(1, 2, 0), ColormapOptions(colormap="pca"))[None]
             Image.fromarray((render_pkg['rendered_feature'][0].cpu().numpy() * 255).astype(np.uint8)).save('tmp/rendered_feature.jpg')
-            Image.fromarray((render_pkg['total_rendered_feature'][0].cpu().numpy() * 255).astype(np.uint8)).save('tmp/total_rendered_feature.jpg')
+            Image.fromarray((render_pkg['instance_feature'][0].cpu().numpy() * 255).astype(np.uint8)).save('tmp/instance_feature.jpg')
             
         else:
             rendered_feature = None
         if self.show_semantic_map.value and self.semantic_embeddings is not None:
             # if semantic_rendered_feature is None:
             #     semantic_rendered_feature = render(cam, self.gaussian, self.pipe, self.semantic_feature_bg_color, render_feature=True, override_feature=self.gaussian.semantic_features)['render_feature']
-            similarity_map = self.get_semantic_map(total_rendered_feature)
+            similarity_map = self.get_semantic_map(instance_feature)
             # print(similarity_map)
             masks = similarity_map > self.mask_threshold.value
             masks_all = masks.any(-1)
@@ -674,14 +658,14 @@ class ViserViewer:
             if (self.add_instance_embedding.value and self.point_pos is not None) or self.lisa_mask is not None:
                 if self.lisa_mask is not None:
                     lisa_mask = torch.tensor(self.lisa_mask, torch.bool, device=self.device)
-                    mask_instance_feature = total_rendered_feature[:, lisa_mask].permute(1, 0)
-                    instance_embeddings_index = torch.argmax((mask_instance_feature @ self.gaussian.instance_embeddings.T).softmax(-1))
+                    mask_instance_feature = instance_feature[:, lisa_mask].permute(1, 0)
+                    instance_embeddings_index = torch.argmax(mask_instance_feature @ self.gaussian.instance_embeddings.T, dim=-1)
                     unique_index, counts = torch.unique(instance_embeddings_index)
                     instance_feature = self.gaussian.instance_embeddings[unique_index[torch.argmax(counts)]]
                     self.lisa_mask = None
                     
                 else:
-                    instance_feature = total_rendered_feature[:, (self.point_pos[1] * h).long(), (self.point_pos[0] * w).long()][None]
+                    instance_feature = instance_feature[:, (self.point_pos[1] * h).long(), (self.point_pos[0] * w).long()][None]
                     instance_embedding_index = torch.argmax((instance_feature @ self.gaussian.instance_embeddings.T).softmax(-1))
                     instance_feature = self.gaussian.instance_embeddings[instance_embedding_index]
                     # if instance_feature not in self.instance_features:
@@ -692,7 +676,7 @@ class ViserViewer:
                 # print(self.point_pos)
                 # print(self.render_feature)
             if self.instance_embeddings:
-                similarity_map = (F.normalize(total_rendered_feature.reshape(-1, h * w), dim=0).permute(1, 0) @ F.normalize(torch.stack(self.instance_embeddings), dim=1).T).reshape(h, w, -1)
+                similarity_map = (instance_feature.reshape(-1, h * w).permute(1, 0) @ torch.stack(self.instance_embeddings)).reshape(h, w, -1)
                 # similarity_map = F.cosine_similarity(rendered_feature.reshape(-1, h*w).permute(1, 0), torch.stack(self.instance_features)).reshape(h, w, -1)
                 # instance_map = apply_colormap(similarity_map, ColormapOptions(colormap="turbo", normalize=True, colormap_min=-1, colormap_max=1))
                 masks = (similarity_map > self.mask_threshold.value)
@@ -715,7 +699,7 @@ class ViserViewer:
                 Image.fromarray((render_pkg['instance_object_map'][0].cpu().numpy() * 255).astype(np.uint8)).save('tmp/instance_object_map.jpg')
         
         if self.show_instance_mask.value:
-            pred_instance_mask = self.get_instance_mask(total_rendered_feature)
+            pred_instance_mask = self.get_instance_mask(instance_feature)
             # Image.fromarray((pred_instance_mask).cpu().numpy().astype(np.uint8)).save('1.jpg')
             render_pkg['instance_masks'] = (pred_instance_mask / 255).to(torch.float32)[None]
             # instance_feature = self.gaussian.instance_decoder(render_feature.reshape(-1, h*w).permute(1, 0)).reshape(h, w, -1)
