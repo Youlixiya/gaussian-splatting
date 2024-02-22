@@ -19,9 +19,10 @@ from typing import Literal, Optional
 
 import matplotlib
 import torch
+import numpy as np
 from jaxtyping import Bool, Float
 from torch import Tensor
-
+from sklearn.decomposition import PCA
 import utils.color as colors
 
 Colormaps = Literal["default", "turbo", "viridis", "magma", "inferno", "cividis", "gray", "pca"]
@@ -41,6 +42,7 @@ class ColormapOptions:
     """ Maximum value for the output colormap """
     invert: bool = False
     """ Whether to invert the output colormap """
+    pca_dict: dict = None
 
 
 def apply_colormap(
@@ -85,7 +87,7 @@ def apply_colormap(
         return apply_boolean_colormap(image)
 
     if image.shape[-1] > 3:
-        return apply_pca_colormap(image)
+        return apply_pca_colormap(image, colormap_options.pca_dict)
 
     raise NotImplementedError
 
@@ -170,41 +172,61 @@ def apply_boolean_colormap(
     colored_image[~image[..., 0], :] = false_color
     return colored_image
 
+def apply_pca_colormap(image: Float[Tensor, "*bs dim"], pca: dict) -> Float[Tensor, "*bs rgb=3"]:
+    vis_feature = (image.reshape(-1, image.shape[-1]) - pca['feature_pca_mean'][None, :]) @ pca['feature_pca_components'].T
+    vis_feature = (vis_feature - pca['feature_pca_postprocess_sub']) / pca['feature_pca_postprocess_div']
+    vis_feature = vis_feature.clamp(0.0, 1.0).float().reshape((image.shape[0], image.shape[1], 3))
+    return vis_feature
 
-def apply_pca_colormap(image: Float[Tensor, "*bs dim"]) -> Float[Tensor, "*bs rgb=3"]:
-    """Convert feature image to 3-channel RGB via PCA. The first three principle
-    components are used for the color channels, with outlier rejection per-channel
 
-    Args:
-        image: image of arbitrary vectors
+# def apply_pca_colormap(image: Float[Tensor, "*bs dim"]) -> Float[Tensor, "*bs rgb=3"]:
+#     """Convert feature image to 3-channel RGB via PCA. The first three principle
+#     components are used for the color channels, with outlier rejection per-channel
 
-    Returns:
-        Tensor: Colored image
-    """
-    original_shape = image.shape
-    image = image.view(-1, image.shape[-1])
-    _, _, v = torch.pca_lowrank(image)
-    image = torch.matmul(image, v[..., :3])
-    d = torch.abs(image - torch.median(image, dim=0).values)
-    mdev = torch.median(d, dim=0).values
-    s = d / mdev
-    m = 3.0  # this is a hyperparam controlling how many std dev outside for outliers
-    rins = image[s[:, 0] < m, 0]
-    gins = image[s[:, 1] < m, 1]
-    bins = image[s[:, 2] < m, 2]
+#     Args:
+#         image: image of arbitrary vectors
 
-    image[:, 0] -= rins.min()
-    image[:, 1] -= gins.min()
-    image[:, 2] -= bins.min()
+#     Returns:
+#         Tensor: Colored image
+#     """
+#     original_shape = image.shape
+#     image = image.view(-1, image.shape[-1])
+#     _, _, v = torch.pca_lowrank(image)
+#     image = torch.matmul(image, v[..., :3])
+#     d = torch.abs(image - torch.median(image, dim=0).values)
+#     mdev = torch.median(d, dim=0).values
+#     s = d / mdev
+#     m = 3.0  # this is a hyperparam controlling how many std dev outside for outliers
+#     rins = image[s[:, 0] < m, 0]
+#     gins = image[s[:, 1] < m, 1]
+#     bins = image[s[:, 2] < m, 2]
 
-    image[:, 0] /= rins.max() - rins.min()
-    image[:, 1] /= gins.max() - gins.min()
-    image[:, 2] /= bins.max() - bins.min()
+#     image[:, 0] -= rins.min()
+#     image[:, 1] -= gins.min()
+#     image[:, 2] -= bins.min()
 
-    image = torch.clamp(image, 0, 1)
-    image_long = (image * 255).long()
-    image_long_min = torch.min(image_long)
-    image_long_max = torch.max(image_long)
-    assert image_long_min >= 0, f"the min value is {image_long_min}"
-    assert image_long_max <= 255, f"the max value is {image_long_max}"
-    return image.view(*original_shape[:-1], 3)
+#     image[:, 0] /= rins.max() - rins.min()
+#     image[:, 1] /= gins.max() - gins.min()
+#     image[:, 2] /= bins.max() - bins.min()
+
+#     image = torch.clamp(image, 0, 1)
+#     image_long = (image * 255).long()
+#     image_long_min = torch.min(image_long)
+#     image_long_max = torch.max(image_long)
+#     assert image_long_min >= 0, f"the min value is {image_long_min}"
+#     assert image_long_max <= 255, f"the max value is {image_long_max}"
+#     return image.view(*original_shape[:-1], 3)
+    
+def get_pca_dict(fmap):
+    pca = PCA(3, random_state=42)
+    f_samples = fmap.permute(1, 2, 0).reshape(-1, fmap.shape[0])[::3].cpu().numpy()
+    transformed = pca.fit_transform(f_samples)
+    feature_pca_mean = torch.tensor(f_samples.mean(0)).float().cuda()
+    feature_pca_components = torch.tensor(pca.components_).float().cuda()
+    q1, q99 = np.percentile(transformed, [1, 99])
+    feature_pca_postprocess_sub = q1
+    feature_pca_postprocess_div = (q99 - q1)
+    return {'feature_pca_mean': feature_pca_mean,
+            'feature_pca_components': feature_pca_components,
+            'feature_pca_postprocess_sub': feature_pca_postprocess_sub,
+            'feature_pca_postprocess_div': feature_pca_postprocess_div}

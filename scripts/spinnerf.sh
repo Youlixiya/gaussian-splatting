@@ -50,21 +50,29 @@ python test_spinnerf.py --cfg_path scripts/batch_contrastive_spinnerf_test_confi
 #pinecone
 CUDA_VISIBLE_DEVICES=2 python train_gs.py --source_path data/nerf_real_360/pinecone --images images_8 --model_path output/nerf_real_360/pinecone
 CUDA_VISIBLE_DEVICES=3 python train.py --gs_source output/nerf_real_360/pinecone/point_cloud/iteration_10000/point_cloud.ply --colmap_dir data/nerf_real_360/pinecone --images images_8
+CUDA_VISIBLE_DEVICES=0 python train.py --gs_source output/nerf_real_360/pinecone/point_cloud/iteration_10000/point_cloud.ply --colmap_dir data/nerf_real_360/pinecone --images images_8 --gs_feature_dim 8
+CUDA_VISIBLE_DEVICES=2 python train.py --gs_source output/nerf_real_360/pinecone/point_cloud/iteration_10000/point_cloud.ply --colmap_dir data/nerf_real_360/pinecone --images images_8 --gs_feature_dim 32
 CUDA_VISIBLE_DEVICES=2 python train.py --gs_source output/nerf_real_360/pinecone/point_cloud/iteration_10000/point_cloud.ply --colmap_dir data/nerf_real_360/pinecone --images images_8 --no_cache
 
 #truck
 CUDA_VISIBLE_DEVICES=1 python train_gs.py --source_path data/tandt/truck --images images --model_path output/tandt/truck
 CUDA_VISIBLE_DEVICES=4 python train.py --gs_source output/tandt/truck/point_cloud/iteration_10000/point_cloud.ply --colmap_dir data/tandt/truck --images images
+CUDA_VISIBLE_DEVICES=1 python train.py --gs_source output/tandt/truck/point_cloud/iteration_10000/point_cloud.ply --colmap_dir data/tandt/truck --images images --gs_feature_dim 8
+CUDA_VISIBLE_DEVICES=3 python train.py --gs_source output/tandt/truck/point_cloud/iteration_10000/point_cloud.ply --colmap_dir data/tandt/truck --images images --gs_feature_dim 32
 CUDA_VISIBLE_DEVICES=3 python train.py --gs_source output/tandt/truck/point_cloud/iteration_10000/point_cloud.ply --colmap_dir data/tandt/truck --images images --no_cache
 
 #fork
 CUDA_VISIBLE_DEVICES=1 python train_gs.py --source_path data/fork --images images_8 --model_path output/fork
 CUDA_VISIBLE_DEVICES=5 python train.py --gs_source output/fork/point_cloud/iteration_10000/point_cloud.ply --colmap_dir data/fork --images images_8
+CUDA_VISIBLE_DEVICES=2 python train.py --gs_source output/fork/point_cloud/iteration_10000/point_cloud.ply --colmap_dir data/fork --images images_8 --gs_feature_dim 8
+CUDA_VISIBLE_DEVICES=4 python train.py --gs_source output/fork/point_cloud/iteration_10000/point_cloud.ply --colmap_dir data/fork --images images_8 --gs_feature_dim 32
 CUDA_VISIBLE_DEVICES=4 python train.py --gs_source output/fork/point_cloud/iteration_10000/point_cloud.ply --colmap_dir data/fork --images images_8 --no_cache
 
 #lego_real_night_radial
 CUDA_VISIBLE_DEVICES=2 python train_gs.py --source_path data/lego_real_night_radial --images images --model_path output/lego_real_night_radial
 CUDA_VISIBLE_DEVICES=0 python train.py --gs_source output/lego_real_night_radial/point_cloud/iteration_10000/point_cloud.ply --colmap_dir data/lego_real_night_radial --images images
+CUDA_VISIBLE_DEVICES=3 python train.py --gs_source output/lego_real_night_radial/point_cloud/iteration_10000/point_cloud.ply --colmap_dir data/lego_real_night_radial --images images --gs_feature_dim 8
+CUDA_VISIBLE_DEVICES=5 python train.py --gs_source output/lego_real_night_radial/point_cloud/iteration_10000/point_cloud.ply --colmap_dir data/lego_real_night_radial --images images --gs_feature_dim 32
 CUDA_VISIBLE_DEVICES=5 python train.py --gs_source output/lego_real_night_radial/point_cloud/iteration_10000/point_cloud.ply --colmap_dir data/lego_real_night_radial --images images --no_cache
 
 python metrics_spinnerf.py --cfg_path scripts/batch_contrastive_spinnerf_test_config.json --gt_path data/mvseg --save_tag spinnerf_batch_contrastive

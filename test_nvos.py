@@ -2,6 +2,7 @@ import os
 import cv2
 import torch
 import json
+import time
 import numpy as np
 import torch.nn.functional as F
 from PIL import Image
@@ -9,7 +10,7 @@ from scene.cameras import Simple_Camera, C2W_Camera, MiniCam
 from gaussian_renderer import render
 from scene.camera_scene import CamScene
 from scene import Scene, GaussianModel, GaussianFeatureModel
-from utils.colormaps import ColormapOptions, apply_colormap
+from utils.colormaps import ColormapOptions, apply_colormap, get_pca_dict
 from utils.color import generate_contrasting_colors
 from utils.general_utils import AttrDict
 from argparse import ArgumentParser
@@ -21,6 +22,7 @@ def point_instance_segmentation(image, gaussian, points, render_instance_feature
     h, w = render_instance_feature.shape[1:]
     points = torch.tensor(points, dtype=torch.int64, device=device)
     instance_embeddings = []
+    t1 = time.time()
     for point in points:
         instance_embedding = F.normalize(render_instance_feature[:, point[0], point[1]][None], dim=-1)
         instance_embedding_index = torch.argmax((instance_embedding @ gaussian.instance_embeddings.T).softmax(-1))
@@ -29,6 +31,8 @@ def point_instance_segmentation(image, gaussian, points, render_instance_feature
     instance_embeddings = torch.stack(instance_embeddings)
     similarity_map = (F.normalize(render_instance_feature.reshape(-1, h * w).permute(1, 0), dim=1) @ instance_embeddings.T).reshape(h, w, -1)
     masks = (similarity_map > mask_threshold)
+    t2 = time.time()
+    print(f'time:{t2 - t1}')
     masks_all_instance = masks.any(-1)
     instance_mask_map = image.clone()
     instance_object_map = image.clone()
@@ -115,11 +119,15 @@ if __name__ == '__main__':
             break
     cam = colmap_cameras.pop(i)
     os.makedirs(args.save_path, exist_ok=True)
+    rendered_feature_pca_dict = None
+    instance_feature_pca_dict = None
     with torch.no_grad():
         render_pkg = render(cam, gaussian, pipe, background)
         image_tensor = render_pkg['render'].permute(1, 2, 0).clamp(0, 1)
         image = Image.fromarray((image_tensor.cpu().numpy() * 255).astype(np.uint8))
         render_feature = render(cam, gaussian, pipe, feature_bg, render_feature=True, override_feature=gaussian.gs_features)['render_feature']
+        if rendered_feature_pca_dict is None:
+            rendered_feature_pca_dict = get_pca_dict(render_feature)
         # total_rendered_feature = [render_feature]
         # if gaussian.rgb_decode:
         #     total_rendered_feature.append(render_pkg['render'])
@@ -132,12 +140,14 @@ if __name__ == '__main__':
         #     total_rendered_feature = F.normalize(gaussian.feature_aggregator(total_rendered_feature), dim=-1)
         # else:
         instance_feature = F.normalize(render_feature.reshape(-1, h*w), dim=0).reshape(-1, h, w)
+        if instance_feature_pca_dict is None:
+            instance_feature_pca_dict = get_pca_dict(instance_feature)
         # instance_feature = F.normalize(gaussian.instance_feature_decoder(render_feature[None])[0].reshape(-1, h*w), dim=0).reshape(-1, h, w)
         masks_all_instance, instance_mask_map, instance_object_map = point_instance_segmentation(image_tensor, gaussian, args.points, instance_feature, args.mask_threshold, device='cuda')
         instance_masks = instance_segmentation_all(image_tensor, gaussian, instance_feature)
         image.save(os.path.join(args.save_path, f'rendered_rgb_{args.image_name}'))
-        Image.fromarray((apply_colormap(render_feature.permute(1, 2, 0), ColormapOptions(colormap="pca")).cpu().numpy() * 255).astype(np.uint8)).save(os.path.join(args.save_path, f'rendered_feature_pca_{args.image_name}'))
-        Image.fromarray((apply_colormap(instance_feature.permute(1, 2, 0), ColormapOptions(colormap="pca")).cpu().numpy() * 255).astype(np.uint8)).save(os.path.join(args.save_path, f'instance_feature_pca_{args.image_name}'))
+        Image.fromarray((apply_colormap(render_feature.permute(1, 2, 0), ColormapOptions(colormap="pca", pca_dict=rendered_feature_pca_dict)).cpu().numpy() * 255).astype(np.uint8)).save(os.path.join(args.save_path, f'rendered_feature_pca_{args.image_name}'))
+        Image.fromarray((apply_colormap(instance_feature.permute(1, 2, 0), ColormapOptions(colormap="pca", pca_dict=instance_feature_pca_dict)).cpu().numpy() * 255).astype(np.uint8)).save(os.path.join(args.save_path, f'instance_feature_pca_{args.image_name}'))
         Image.fromarray(np.stack([(masks_all_instance.cpu().numpy() * 255).astype(np.uint8)] * 3, axis=-1)).save(os.path.join(args.save_path, args.mask_save_name))
         Image.fromarray((instance_mask_map.clamp(0, 1).cpu().numpy() * 255).astype(np.uint8)).save(os.path.join(args.save_path, f'instance_mask_map_{args.image_name}'))
         Image.fromarray((instance_object_map.clamp(0, 1).cpu().numpy() * 255).astype(np.uint8)).save(os.path.join(args.save_path, f'instance_object_map_{args.image_name}'))

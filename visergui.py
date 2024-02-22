@@ -19,7 +19,7 @@ from scene.cameras import MiniCam
 from utils.graphics_utils import getWorld2View2, getProjectionMatrix
 from argparse import ArgumentParser
 from arguments import ModelParams, PipelineParams, get_combined_args
-from render import Renderer
+from render_copy import Renderer
 def qvec2rotmat(qvec):
     return np.array(
         [

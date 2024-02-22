@@ -34,7 +34,7 @@ COLORS_DICT = {
     "blue": BLUE,
 }
 
-SEED = 0
+SEED = 42
 
 torch.manual_seed(SEED)
 torch.cuda.manual_seed(SEED)

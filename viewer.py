@@ -15,7 +15,6 @@ import time
 import viser
 import viser.transforms as tf
 import torch.nn.functional as F
-from omegaconf import OmegaConf
 from collections import deque
 from typing import Any, Dict
 from tqdm import tqdm
@@ -27,12 +26,12 @@ from utils.graphics_utils import getWorld2View2, getProjectionMatrix
 from utils.camera_utils import project, unproject
 from utils.extract_masks import MaskDataset
 from utils.color import generate_contrasting_colors
-from utils.colormaps import ColormapOptions, apply_colormap
+from utils.colormaps import ColormapOptions, apply_colormap, get_pca_dict
 from utils.mask_utils import draw_mask
 from argparse import ArgumentParser
 from arguments import ModelParams, PipelineParams, get_combined_args
 from scene import Scene, GaussianModel, GaussianFeatureModel
-from grounded_sam import GroundMobileSAM, GroundSAM
+# from grounded_sam import GroundMobileSAM, GroundSAM
 from lisa.lisa_pipeline import LISAPipeline
 
 def qvec2rotmat(qvec):
@@ -91,6 +90,8 @@ class ViserViewer:
         self.instance_embeddings = []
         self.instance_colors = []
         self.colors = generate_contrasting_colors(500)
+        self.rendered_feature_pca_dict = None
+        self.instance_feature_pca_dict = None
         self.point_pos = None
         # self.points3d = []
          # front end related
@@ -128,7 +129,7 @@ class ViserViewer:
         #load llava
         if cfg.lisa:
             self.vlm_name = 'LISA'
-            self.lisa_pipeline = LISAPipeline(cfg.lisa_model_type, local_rank=1, load_in_4bit=False, load_in_8bit=True, conv_type=cfg.lisa_conv_type)
+            self.lisa_pipeline = LISAPipeline(cfg.lisa_model_type, local_rank=0, load_in_4bit=True, load_in_8bit=False, conv_type=cfg.lisa_conv_type)
         else:
             self.vlm_name = ''
         self.lisa_mask = None
@@ -137,7 +138,7 @@ class ViserViewer:
         # self.clip_model, self.preprocess = alpha_clip.load(cfg.clip_model_type, device=self.device, alpha_vision_ckpt_pth=cfg.clip_model_pretrained, lora_adapt=False, rank=-1)
         
         os.makedirs('tmp', exist_ok=True)
-        self.instance_feature_bg_color = torch.tensor([0] * self.gaussian.instance_feature_dim, dtype=torch.float32, device=self.device)
+        self.instance_feature_bg_color = torch.tensor([0] * self.gaussian.gs_feature_dim, dtype=torch.float32, device=self.device)
         # self.clip_model, self.preprocess = clip.load(cfg.clip_type, device=self.device)
         # self.text_segmentor = GroundMobileSAM(device=self.device)
         # self.text_segmentor = GroundSAM(device=self.device)
@@ -413,9 +414,12 @@ class ViserViewer:
     @torch.no_grad()
     def get_mask_by_lisa(self):
         if self.text_prompt.value:
+            print('lisa')
             result_list, mask_result_list, mask_list, mask_rgb_list, output_str = self.lisa_pipeline(self.text_prompt.value, image=self.image)
             self.lisa_mask = mask_list[0]
             self.vlm_output.value = output_str
+            print(output_str)
+            print(self.lisa_mask)
         else:
             self.vlm_output.value = 'Please provide text prompt!'
         print(self.vlm_output.value)
@@ -603,9 +607,13 @@ class ViserViewer:
         semantic_rendered_feature = None
         if self.show_instance_map or self.show_instance_map or self.show_instance_mask or self.show_semantic_mask:
             # render_feature = render(cam, self.gaussian, self.pipe, self.background_tensor, render_feature=True)['render_feature']
-            rendered_feature = render(cam, self.gaussian, self.pipe, self.instance_feature_bg_color, render_feature=True, override_feature=self.gaussian.instance_features)['render_feature']
+            rendered_feature = render(cam, self.gaussian, self.pipe, self.instance_feature_bg_color, render_feature=True, override_feature=self.gaussian.gs_features)['render_feature']
             h, w = rendered_feature.shape[1:]
             instance_feature = F.normalize(rendered_feature.reshape(-1, h * w), dim=0).reshape(-1, h, w)
+            if self.rendered_feature_pca_dict is None:
+                self.rendered_feature_pca_dict = get_pca_dict(rendered_feature)
+            if self.instance_feature_pca_dict is None:
+                self.instance_feature_pca_dict = get_pca_dict(instance_feature)
             # total_rendered_feature = [rendered_feature]
             # if self.gaussian.rgb_decode:
             #     total_rendered_feature.append(render_pkg['render'])
@@ -618,13 +626,14 @@ class ViserViewer:
             # else:
             #     total_rendered_feature = F.normalize(total_rendered_feature, dim=-1)
             # total_rendered_feature = total_rendered_feature.permute(1, 0).reshape(-1, h, w)
-            render_pkg['rendered_feature'] = apply_colormap(rendered_feature.permute(1, 2, 0), ColormapOptions(colormap="pca"))[None]
-            render_pkg['instance_feature'] = apply_colormap(instance_feature.permute(1, 2, 0), ColormapOptions(colormap="pca"))[None]
+            render_pkg['rendered_feature'] = apply_colormap(rendered_feature.permute(1, 2, 0), ColormapOptions(colormap="pca", pca_dict=self.rendered_feature_pca_dict))[None]
+            render_pkg['instance_feature'] = apply_colormap(instance_feature.permute(1, 2, 0), ColormapOptions(colormap="pca", pca_dict=self.instance_feature_pca_dict))[None]
             Image.fromarray((render_pkg['rendered_feature'][0].cpu().numpy() * 255).astype(np.uint8)).save('tmp/rendered_feature.jpg')
             Image.fromarray((render_pkg['instance_feature'][0].cpu().numpy() * 255).astype(np.uint8)).save('tmp/instance_feature.jpg')
             
         else:
             rendered_feature = None
+            instance_feature = None
         if self.show_semantic_map.value and self.semantic_embeddings is not None:
             # if semantic_rendered_feature is None:
             #     semantic_rendered_feature = render(cam, self.gaussian, self.pipe, self.semantic_feature_bg_color, render_feature=True, override_feature=self.gaussian.semantic_features)['render_feature']
@@ -649,34 +658,36 @@ class ViserViewer:
             render_pkg['semantic_mask_map'] = semantic_mask_map[None]
             render_pkg['sematic_object_map'] = sematic_object_map[None]
             # Image.fromarray((render_pkg['semantic_heat_map'][0].cpu().numpy() * 255).astype(np.uint8)).save('tmp/semantic_heat_map.jpg')
-            Image.fromarray((render_pkg['semantic_mask_map'][0].cpu().numpy() * 255).astype(np.uint8)).save('tmp/semantic_mask_map.jpg')
-            Image.fromarray((render_pkg['sematic_object_map'][0].cpu().numpy() * 255).astype(np.uint8)).save('tmp/sematic_object_map.jpg')
+            Image.fromarray((render_pkg['semantic_mask_map'][0].clamp(0, 1).cpu().numpy() * 255).astype(np.uint8)).save('tmp/semantic_mask_map.jpg')
+            Image.fromarray((render_pkg['sematic_object_map'][0].clamp(0, 1).cpu().numpy() * 255).astype(np.uint8)).save('tmp/sematic_object_map.jpg')
         
         if self.show_instance_map.value:
             # if self.point_pos is not None:
             #     if self.instance_feature is None:
             if (self.add_instance_embedding.value and self.point_pos is not None) or self.lisa_mask is not None:
                 if self.lisa_mask is not None:
-                    lisa_mask = torch.tensor(self.lisa_mask, torch.bool, device=self.device)
+                    lisa_mask = torch.tensor(self.lisa_mask, dtype=torch.bool, device=self.device)
                     mask_instance_feature = instance_feature[:, lisa_mask].permute(1, 0)
                     instance_embeddings_index = torch.argmax(mask_instance_feature @ self.gaussian.instance_embeddings.T, dim=-1)
-                    unique_index, counts = torch.unique(instance_embeddings_index)
-                    instance_feature = self.gaussian.instance_embeddings[unique_index[torch.argmax(counts)]]
+                    unique_index, counts = torch.unique(instance_embeddings_index, return_counts=True)
+                    instance_embedding = self.gaussian.instance_embeddings[unique_index[torch.argmax(counts)]]
                     self.lisa_mask = None
                     
                 else:
-                    instance_feature = instance_feature[:, (self.point_pos[1] * h).long(), (self.point_pos[0] * w).long()][None]
-                    instance_embedding_index = torch.argmax((instance_feature @ self.gaussian.instance_embeddings.T).softmax(-1))
-                    instance_feature = self.gaussian.instance_embeddings[instance_embedding_index]
+                    instance_embedding = instance_feature[:, (self.point_pos[1] * h).long(), (self.point_pos[0] * w).long()][None]
+                    instance_embedding_index = torch.argmax((instance_embedding @ self.gaussian.instance_embeddings.T).softmax(-1))
+                    instance_embedding = self.gaussian.instance_embeddings[instance_embedding_index]
                     # if instance_feature not in self.instance_features:
                     self.point_pos = None
-                self.instance_embeddings.append(instance_feature)
+                self.instance_embeddings.append(instance_embedding)
                 self.instance_colors.append(self.mask_colors_picker.value)
                 self.selected_instance_num.value = str(len(self.instance_embeddings))
                 # print(self.point_pos)
                 # print(self.render_feature)
             if self.instance_embeddings:
-                similarity_map = (instance_feature.reshape(-1, h * w).permute(1, 0) @ torch.stack(self.instance_embeddings)).reshape(h, w, -1)
+                # print(instance_feature.shape)
+                # print(torch.stack(self.instance_embeddings).T)
+                similarity_map = (instance_feature.reshape(-1, h * w).permute(1, 0) @ torch.stack(self.instance_embeddings).T).reshape(h, w, -1)
                 # similarity_map = F.cosine_similarity(rendered_feature.reshape(-1, h*w).permute(1, 0), torch.stack(self.instance_features)).reshape(h, w, -1)
                 # instance_map = apply_colormap(similarity_map, ColormapOptions(colormap="turbo", normalize=True, colormap_min=-1, colormap_max=1))
                 masks = (similarity_map > self.mask_threshold.value)
@@ -695,8 +706,8 @@ class ViserViewer:
                 render_pkg['instance_mask_map'] = instance_mask_map[None]
                 render_pkg['instance_object_map'] = instance_object_map[None]
                 # Image.fromarray((render_pkg['instance_heat_map'][0].cpu().numpy() * 255).astype(np.uint8)).save('tmp/instance_heat_map.jpg')
-                Image.fromarray((render_pkg['instance_mask_map'][0].cpu().numpy() * 255).astype(np.uint8)).save('tmp/instance_mask_map.jpg')
-                Image.fromarray((render_pkg['instance_object_map'][0].cpu().numpy() * 255).astype(np.uint8)).save('tmp/instance_object_map.jpg')
+                Image.fromarray((render_pkg['instance_mask_map'][0].clamp(0, 1).cpu().numpy() * 255).astype(np.uint8)).save('tmp/instance_mask_map.jpg')
+                Image.fromarray((render_pkg['instance_object_map'][0].clamp(0, 1).cpu().numpy() * 255).astype(np.uint8)).save('tmp/instance_object_map.jpg')
         
         if self.show_instance_mask.value:
             pred_instance_mask = self.get_instance_mask(instance_feature)
@@ -805,12 +816,11 @@ if __name__ == '__main__':
     pp = PipelineParams(parser)
     parser.add_argument("--gs_source", type=str, required=True)  # gs ply or obj file?
     parser.add_argument("--feature_gs_source", type=str, default='')  # feature gs pt file? 
-    parser.add_argument("--gs_feature_dim", type=int, default=16)
     parser.add_argument("--colmap_dir", type=str, required=True)  #
     parser.add_argument("--clip_model_type", type=str, default='ViT-B/16')  # gs ply or obj file?
     parser.add_argument("--clip_model_pretrained", type=str, default='mask_adapted_clip.pt')
-    parser.add_argument("--lisa_model_type", type=str, default='xinlai/LISA-7B-v1')
-    parser.add_argument("--lisa_conv_type", type=str, default='conv_type')
+    parser.add_argument("--lisa_model_type", type=str, default='xinlai/LISA-13B-llama2-v1-explanatory')
+    parser.add_argument("--lisa_conv_type", type=str, default='llava_llama_2')
     parser.add_argument("--lisa", action='store_true')
     # parser.add_argument("--clip_model_pretrained", type=str, default='clip_b16_grit+mim_fultune_4xe.pth')
     args = parser.parse_args()
