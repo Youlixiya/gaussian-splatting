@@ -2,8 +2,11 @@
 	path = SIBR_viewers
 	url = https://gitlab.inria.fr/sibr/sibr_core.git
 [submodule "Tracking-Anything-with-DEVA"]
-	path = Tracking-Anything-with-DEVA
+	path = submodule/Tracking-Anything-with-DEVA
 	url = https://github.com/hkchengrex/Tracking-Anything-with-DEVA.git
 [submodule "AlphaCLIP"]
-	path = AlphaCLIP
+	path = submodule/AlphaCLIP
 	url = https://github.com/SunzeY/AlphaCLIP.git
+[submodule "tokenize_anything"]
+	path = submodule/tokenize_anything
+	url = https://github.com/Youlixiya/tokenize-anything

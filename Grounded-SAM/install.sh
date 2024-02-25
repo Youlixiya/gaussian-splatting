@@ -1,1 +1,0 @@
-pip install ./segment_anything && pip install ./GroundingDINO && pip install .
