@@ -28,3 +28,4 @@ tmp
 *.pth
 *.png
 *.txt
+ckpts

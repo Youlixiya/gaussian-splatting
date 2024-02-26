@@ -1,7 +1,7 @@
 import os
 from typing import Any
 import cv2
-import clip
+# import clip
 import alpha_clip
 import torch
 import math
@@ -11,12 +11,9 @@ from tqdm import tqdm, trange
 import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
 import torchvision.transforms as T
-from segment_anything import sam_model_registry, SamAutomaticMaskGenerator, SamPredictor
+from tokenize_anything import model_registry, TapAutomaticMaskGenerator
 from torch.utils.data import Dataset
 from torchvision import transforms
-
-IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
-IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
 
 # class AutoMaskExtractor:
 #     def __init__(self,
@@ -145,30 +142,34 @@ class DINOV2Extractor:
         np.savez_compressed(self.dino_features_save_path, *dinov2_features)
         
 
-class MaskDataset(Dataset):
+class CLIPFeatureDataset(Dataset):
     def __init__(self,
                  source_root,
                  cameras,
-                 mask_dir='masks_4',
+                 features_dir='features_4',
                  clip_model_type='ViT-B/16',
-                 clip_model_pretrained='mask_adapted_clip.pt',
-                #  clip_model_pretrained='clip_b16_grit+mim_fultune_4xe.pth',
-                 semantic_similarity=0.95,
+                 tap_type='tap_vit_l',
+                 tap_ckpt='ckpts/tap/tap_vit_l_03f8ec.pkl',
+                #  clip_model_pretrained='mask_adapted_clip.pt',
+                 clip_model_pretrained='ckpts/alphaclip/clip_b16_grit+mim_fultune_4xe.pth',
                  device='cuda'
                  ):
         self.source_root = source_root
-        self.mask_dir = mask_dir
-        self.semantic_similarity = semantic_similarity
-        self.img_dir = mask_dir.replace('masks', 'images')
+        self.features_dir = features_dir
+        self.img_dir = features_dir.replace('features', 'images')
         img_suffix = os.listdir(os.path.join(source_root, self.img_dir))[0].split('.')[-1]
         self.imgs_name = [f'{camera.image_name}.{img_suffix}' for camera in cameras]
-        self.masks_path = os.path.join(source_root, f'{mask_dir}.npz')
+        self.features_name = [img_name.replace(img_suffix, 'pt') for img_name in self.imgs_name]
+        self.features_path = os.path.join(source_root, features_dir)
+        self.features_file_path = [os.path.join(self.features_path, feature_name) for feature_name in self.features_name]
         # self.semantic_similarity = semantic_similarity
-        if os.path.exists(self.masks_path):
-            colors_masks = np.load(self.masks_path, allow_pickle=True)['arr_0'].tolist()
-            self.instance_masks = colors_masks['instance_masks']
-            self.instance_colors = colors_masks['instance_colors']
-            self.clip_embeddings = colors_masks['clip_embeddings']
+        if os.path.exists(self.features_path):
+            self.features = []
+            for feature_file_path in self.features_file_path:
+                self.features.append(torch.load(feature_file_path))
+            self.features = torch.stack(self.features)
+            
+
         else:
             self.masks_name = [img_name.split('.')[0] + '.png' for img_name in self.imgs_name]
             self.masks_path = [os.path.join(source_root, mask_dir, 'Annotations', mask_name) for mask_name in self.masks_name]
